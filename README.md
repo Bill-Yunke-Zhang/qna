@@ -1,3 +1,11 @@
+## Your Team
+
+- Yuthika Goel (ygoel3@wisc.edu)
+- Bill Zhang (yyzhang@wisc.edu)
+
+Reach your partner directly by emailing the address above — it's their @wisc.edu NetID email.
+---
+
 # QnA
 
 A Piazza-style course question-and-answer board. Students ask questions, course staff (and other students) answer them, and every question is the root of a discussion thread that stays open — accepting new answers and follow-ups — until course staff explicitly close it.
