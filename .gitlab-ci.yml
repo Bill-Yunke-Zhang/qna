@@ -1,0 +1,46 @@
+stages:
+  - lint
+  - test
+  - secret-detection
+
+variables:
+  SECRET_DETECTION_ENABLED: 'true'
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+# ── Style checks ──────────────────────────────────────────────────────────────
+
+python-lint:
+  stage: lint
+  image: python:3.12-slim
+  before_script:
+    # Pinned so a future ruff release with new rules can't suddenly fail every MR
+    - pip install "ruff==0.15.21" --quiet
+  script:
+    - ruff check backend/ scripts/
+    - ruff format --check backend/ scripts/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+frontend-typecheck:
+  stage: lint
+  image: node:20
+  script:
+    - npm install --prefix frontend/student
+    - npm install --prefix frontend/staff
+    - npm install --prefix frontend/admin
+    - (cd frontend/student && npx tsc --noEmit)
+    - (cd frontend/staff   && npx tsc --noEmit)
+    - (cd frontend/admin   && npx tsc --noEmit)
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# ── Security scans ────────────────────────────────────────────────────────────
+
+sast:
+  stage: test
+
+secret_detection:
+  stage: secret-detection

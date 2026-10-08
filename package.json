@@ -1,0 +1,15 @@
+{
+  "name": "qna",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --names student,staff,admin --prefix-colors cyan,green,magenta \"npm run dev --prefix frontend/student\" \"npm run dev --prefix frontend/staff\" \"npm run dev --prefix frontend/admin\"",
+    "dev:student": "npm run dev --prefix frontend/student",
+    "dev:staff": "npm run dev --prefix frontend/staff",
+    "dev:admin": "npm run dev --prefix frontend/admin",
+    "build": "npm run build --prefix frontend/student && npm run build --prefix frontend/staff && npm run build --prefix frontend/admin",
+    "install:all": "npm install --prefix frontend/student && npm install --prefix frontend/staff && npm install --prefix frontend/admin"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

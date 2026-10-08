@@ -1,0 +1,118 @@
+{
+  "description": "Staff-provided ground-truth question set for T6's RAG configuration comparison. Every expected_source and expected_answer below was pulled directly from the files in eval/sample_data/ — check a question against its source file if anything looks off. Ingest sample_data/ into a course (via the file-upload fallback path from T4) before running the comparison harness against these.",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "How many slip days does each student get, and what do they cover?",
+      "resource_type": "syllabus",
+      "expected_source": "eval/sample_data/web/syllabus.html",
+      "expected_source_section": "Late Policy — Slip Days",
+      "expected_answer": "Each student has a bank of 5 slip days for the semester, usable on P1–P4 only (not the Final Project). Slip days waive the late deduction but never move the hard cutoff."
+    },
+    {
+      "id": "q02",
+      "question": "What is the hard cutoff for late project submissions, even if I have slip days left?",
+      "resource_type": "syllabus",
+      "expected_source": "eval/sample_data/web/syllabus.html",
+      "expected_source_section": "Late Policy — Slip Days",
+      "expected_answer": "No submission is accepted more than 2 days after the due date, for any project, regardless of slip days remaining. Slip days waive the deduction within that window — they don't extend the window itself."
+    },
+    {
+      "id": "q03",
+      "question": "Is AI allowed during exams?",
+      "resource_type": "syllabus",
+      "expected_source": "eval/sample_data/web/syllabus.html",
+      "expected_source_section": "AI Use Policy",
+      "expected_answer": "No — quizzes and written exams are closed-AI, closed-book. Using AI on them violates the AI Use Policy."
+    },
+    {
+      "id": "q04",
+      "question": "When is Project 3 due?",
+      "resource_type": "schedule",
+      "expected_source": "eval/sample_data/web/schedule.html",
+      "expected_source_section": "P3 Released / Lecture 16",
+      "expected_answer": "Tuesday, October 27 at 11:59 PM."
+    },
+    {
+      "id": "q05",
+      "question": "By Lecture 13, how many services does the Docker Compose stack have, and what got added?",
+      "resource_type": "schedule",
+      "expected_source": "eval/sample_data/web/schedule.html",
+      "expected_source_section": "Lecture 13",
+      "expected_answer": "The stack grows from 3 to 6 services — Ollama (generation), Infinity (embeddings), and ChromaDB (vector store) are the three added at Lecture 13."
+    },
+    {
+      "id": "q06",
+      "question": "What is broken in the Project 1 starter code that students have to fix?",
+      "resource_type": "repo_markdown",
+      "expected_source": "eval/sample_data/repo/p1-side-scroller/instructions.md",
+      "expected_source_section": "T4 — Fix the Parallax Bug",
+      "expected_answer": "The parallax background scrolling system is broken. Background layers should scroll correctly relative to the camera and player movement: the farthest-back layer should be the smallest image and scroll slowest; the layer closest to the tiles should be the largest image and scroll fastest."
+    },
+    {
+      "id": "q07",
+      "question": "What checks does Project 2's CI pipeline run before a merge request can be approved?",
+      "resource_type": "repo_markdown",
+      "expected_source": "eval/sample_data/repo/p2-buzzer/instructions.md",
+      "expected_source_section": "T2 — Keep the CI Pipeline Green",
+      "expected_answer": "Python style (ruff check backend/ scripts/), frontend type checking (tsc --noEmit on all three apps), and GitLab's built-in secret detection scan."
+    },
+    {
+      "id": "q08",
+      "question": "In Buzzer's real-time architecture, where does the live game state live versus the permanent record of what happened?",
+      "resource_type": "repo_markdown",
+      "expected_source": "eval/sample_data/repo/p2-buzzer/docs/realtime.md",
+      "expected_source_section": "The cast",
+      "expected_answer": "Redis holds the ephemeral live state (current question, who has answered, scores) — fast, per-room, expires with the room. MySQL holds the permanent record — every answer is written to the database immediately."
+    },
+    {
+      "id": "q09",
+      "question": "What does temperature control in a language model's output, and what happens near temperature 0 versus above 1.5?",
+      "resource_type": "repo_pdf",
+      "expected_source": "eval/sample_data/repo/lecture-10/slides.pdf",
+      "expected_source_section": "Temperature and Sampling",
+      "expected_answer": "Temperature controls how the model's probability distribution over the vocabulary gets sampled. Near 0.0 is nearly deterministic (the highest-probability token); around 0.7 is balanced with some variety while staying coherent; 1.5 and above is high randomness, more likely to go off the rails."
+    },
+    {
+      "id": "q10",
+      "question": "Is a language model fully deterministic at temperature 0?",
+      "resource_type": "repo_pdf",
+      "expected_source": "eval/sample_data/repo/lecture-10/slides.pdf",
+      "expected_source_section": "Temperature 0.0 Isn't Fully Deterministic",
+      "expected_answer": "No. Even at temperature 0.0, the same prompt can produce slightly different output across runs on different hardware, because parallelized floating-point matrix operations aren't perfectly associative — tiny rounding differences can flip which token is technically highest-probability in a near-tie."
+    },
+    {
+      "id": "q11",
+      "question": "Does a token count from one model's tokenizer transfer to a different model?",
+      "resource_type": "repo_pdf",
+      "expected_source": "eval/sample_data/repo/lecture-10/slides.pdf",
+      "expected_source_section": "Token Counts Aren't Universal",
+      "expected_answer": "No. Each model family trains its own tokenizer on its own vocabulary, so the same text produces a different token count on a different model — always count with the tokenizer for the model you're actually using."
+    },
+    {
+      "id": "q12",
+      "question": "My migrations are stuck in a bad state in development — what's the safe way to reset?",
+      "resource_type": "historical_qa",
+      "expected_source": "in-app thread (seeded by scripts/seed_demo.py)",
+      "expected_source_section": "\"alembic upgrade head fails with 'table already exists' — how do I reset?\"",
+      "expected_answer": "In development it's safe to nuke the volume and start clean: docker compose down -v (removes the MySQL volume), then docker compose up --build, then docker compose run --rm backend alembic upgrade head again. Don't do this against anything with data you care about — -v is destructive."
+    },
+    {
+      "id": "q13",
+      "question": "What's the actual difference between CLAUDE.md and .claude/settings.json?",
+      "resource_type": "historical_qa",
+      "expected_source": "in-app thread (seeded by scripts/seed_demo.py)",
+      "expected_source_section": "\"What's the actual difference between CLAUDE.md and .claude/settings.json?\"",
+      "expected_answer": "CLAUDE.md is prose, auto-loaded at session start, for codebase overview/conventions/behavioral rules. .claude/settings.json is structured config — permissions, hooks, environment variables. There's no 'rules' field in settings.json; behavioral rules always belong in CLAUDE.md prose."
+    },
+    {
+      "id": "q14",
+      "question": "What's the best pizza topping?",
+      "resource_type": "no_match",
+      "expected_source": null,
+      "expected_source_section": null,
+      "expected_answer": null,
+      "notes": "Deliberately out-of-scope — nothing in the ingested content is relevant. A correctly-configured pipeline should return matched: false, not a forced guess. Mirrors Lecture 13's own end-to-end test."
+    }
+  ]
+}

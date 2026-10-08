@@ -1,0 +1,77 @@
+services:
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend/student/dist:/usr/share/nginx/html/student:ro
+      - ./frontend/staff/dist:/usr/share/nginx/html/staff:ro
+      - ./frontend/admin/dist:/usr/share/nginx/html/admin:ro
+    depends_on:
+      - backend
+    networks:
+      - qna_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    # On a fresh database the backend's startup waits (retrying in-process)
+    # until `alembic upgrade head` has created the schema; the restart policy
+    # additionally covers hard crashes.
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - APP_ENV=development
+    volumes:
+      - ./backend:/app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - qna_network
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: qna
+      MYSQL_USER: app_user
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "app_user", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 45s
+
+  redis:
+    image: redis:7.0-alpine
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy allkeys-lru
+
+volumes:
+  mysql_data:
+
+networks:
+  qna_network:
+    driver: bridge
