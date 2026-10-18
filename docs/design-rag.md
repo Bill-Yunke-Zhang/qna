@@ -102,8 +102,21 @@ Type-specific location metadata and how `citation_url` is built:
 | Type | Extra metadata | `citation_url` |
 |---|---|---|
 | Syllabus / schedule (web page) | `heading_path`, `fragment_start`, `fragment_end`, optional `fragment_prefix` | `{page}#:~:text={prefix}-,{start},{end}` (prefix part only when set) |
-| Repo markdown | `file_path`, `line_start`, `line_end`, `heading_path`, `commit_sha` | `{base}/{path}#L{start}-L{end}` |
-| Repo PDF | `file_path`, `page_start`, `page_end`, `commit_sha` | `{base}/{path}#page={page_start}` |
+| Repo markdown | `file_path`, `line_start`, `line_end`, `heading_path`, `commit_sha` | `{base}/{path}?plain=1#L{start}-L{end}` |
+| Repo PDF | `file_path`, `page_start`, `page_end`, `commit_sha` | `{raw_base}/{path}#page={page_start}` |
+
+`source_url` stays `{base}/{path}` for both, so the harness's
+`expected_source in source_url` check is unaffected; only `citation_url`
+changes.
+- **Markdown:** GitLab shows `.md` files rendered, and `#L…` line anchors only
+  work in the source view, so the link adds `?plain=1`.
+- **PDF:** GitLab's built-in PDF viewer may not honor `#page=N`, but the
+  browser's own PDF viewer does. So PDF links use the raw file:
+  `raw_base` is `base` with `/-/blob/` replaced by `/-/raw/`. For an upload
+  whose base isn't a GitLab blob URL, `raw_base = base`.
+
+Both behaviors are to be **checked against our real GitLab** (§11) before
+ingestion code is written.
 | Historical Q&A | `question_id`, `accepted_post_id` | none stored; each frontend builds the link to its own thread page from `question_id` when it renders the citation |
 
 **Text Fragments.** `fragment_start` and `fragment_end` are the first and last
@@ -178,7 +191,10 @@ skips or invents tags; worth retrying with a stronger model); labels like
 - `author_user_id` becomes **nullable**, with
   `CHECK ((author_role = 'AI') = (author_user_id IS NULL))`.
 - New column `citations JSON NULL`, with
-  `CHECK (author_role = 'AI' OR citations IS NULL)`. The shape of each citation
+  `CHECK (author_role = 'AI' OR citations IS NULL)`. The model declares it
+  **`JSON(none_as_null=True)`**. By default SQLAlchemy's `JSON` stores Python
+  `None` as the JSON value `null`, which isn't SQL `NULL`, so any code path that
+  sets `citations=None` explicitly would make the CHECK reject every human post. The shape of each citation
   (1–3 objects with `rank`, `citation_url` or `question_id`, `label`,
   `resource_type` from §3.1 and `similarity_score`) is enforced by the Pydantic
   `Citation` model on the one write path (§4.3). MySQL enforces `CHECK` from
@@ -188,6 +204,9 @@ skips or invents tags; worth retrying with a stronger model); labels like
   author rule below depends on the FK having none.
 - AI posts are always `kind = ANSWER`, so the existing `set_post_accepted`
   accepts them with **no new code path** and no pre-approval.
+- New columns `retracted_at DATETIME NULL` and `retracted_by_user_id NULL → users`,
+  with `CHECK (author_role = 'AI' OR retracted_at IS NULL)`: only AI posts can be
+  retracted (§4.4).
 
 All `CHECK` constraints are written by hand in the migration (Alembic
 autogenerate doesn't detect them).
@@ -246,16 +265,38 @@ link text, *best match* on the first). It must work in both themes (T8).
 **Finding AI answers to check.** Staff review after posting is the only safety
 net, and "N replies" makes an AI-answered thread look attended. So
 `QuestionSummary` gains `has_ai_answer: bool` (computed like
-`has_accepted_answer`), and the staff question list shows an "AI answered" badge
-and a filter for AI-answered threads with no accepted answer.
+`has_accepted_answer`, ignoring retracted posts), and the staff question list
+shows an "AI answered" badge and a filter for AI-answered threads with no
+accepted answer.
+
+**Retracting a wrong AI answer.** The board has no way to delete, edit or hide a
+post. Without one, a wrong AI answer stays visible to the class under an
+official-looking badge, and since the question body is controlled by the
+student, an injected question could make the AI post text the student chose.
+So staff get **"Retract AI answer"**:
+- `PATCH /courses/{course_id}/questions/{question_id}/posts/{post_id}/retract`,
+  `require_course_staff`, only for `author_role = 'AI'` (otherwise `422`). It
+  sets `retracted_at` and `retracted_by_user_id`, and un-accepts the post if it
+  was accepted.
+- Students don't see retracted posts at all. Staff see a collapsed "AI answer
+  retracted by {name}" line that expands to the original text.
+- `answer_question` counts retracted AI posts as "already has an AI post", so a
+  retracted thread is never answered again.
+- A soft hide, not a delete, so the record of what the AI said is kept.
 
 ### 4.5 Showing the answer without a refresh
 
 `AskQuestionPage` navigates to the new thread with router state
 `{ justAsked: true }`. Only then does the thread page poll with the existing
 `load()`, every ~5 s, until an AI post appears or a fixed number of attempts
-(~36, i.e. ~3 minutes) runs out. Reloading or opening the thread later doesn't
-poll.
+(~36, i.e. ~3 minutes) runs out. Opening the thread later from the list doesn't
+poll. Reloading the page right after asking does poll again, because React
+Router keeps `location.state` in `history.state`, which survives a reload; that's
+harmless.
+
+If the live backlog is long or a grading run has paused live answering (§5.3,
+§5.4), an answer can arrive after the polling window ends. The banner then just
+disappears, and the answer appears on the next visit. That's acceptable.
 
 The window is never computed from `created_at`. That is a naive MySQL
 `func.now()` (UTC) serialized without an offset, which the browser reads as
@@ -282,6 +323,16 @@ The spec says the board's "accepted/closed threads". **We read that as threads
 with an accepted answer**: a closed thread without one has no answer to give, so
 it's not indexed. New accepted answers reach the index only through the manual
 "Re-index Q&A threads" action (§7.5), not automatically.
+
+**When staff un-accept an answer** (or accept a different one, or retract an
+accepted AI answer), `set_post_accepted` removes that thread's `historical_qa`
+chunks from **every** profile's collection (by `question_id`), right away. So
+the AI stops citing an answer staff rejected. Deleting is the same in every
+profile, so it causes no version mismatch (§7.3). The thread comes back, with
+its new accepted answer, on the next re-index of all profiles.
+
+In the eval course, nobody changes accepted answers or re-indexes during grading
+windows (§10).
 
 A thread becomes a historical Q&A chunk only if its accepted answer was written
 by a person (`author_role != 'AI'`). So AI text never re-enters the index, and
@@ -332,10 +383,15 @@ on 2026-10-17.
   in fp32; MiniLM and bge-small < 0.5 GB; one Ollama model at 4-bit ~1–2.5 GB
   (`qwen2.5:1.5b` / `3b`); MySQL, Redis, ChromaDB and the backend ~2 GB. That
   fits with one Ollama model loaded at a time.
-- **Measure early, in the T5 infrastructure step** (not during T6): with every
-  embedding model loaded in Infinity, run one embedding with gte-Qwen2 and one
-  generation with the largest T6 Ollama model, and record peak
-  `docker stats`. If peak use goes above ~13 GB, revisit the setup then (§12).
+- **Measure early, in the T5 infrastructure step** (not during T6), in the
+  worst case the design allows: with every embedding model loaded in Infinity,
+  run a **batched `embedding-alt` ingestion** (long inputs, which use the most
+  memory while embedding) **while a generation with the largest T6 Ollama model
+  runs**. Record peak `docker stats`. If peak use goes above ~13 GB, revisit
+  the setup then (§12).
+- **Embedding batch size is capped** (`INFINITY_BATCH_SIZE`, e.g. 16 texts per
+  request from `clients.py`, and Infinity's own `--batch-size` set to match),
+  so a large ingestion can't grow Infinity's memory without limit.
 - `docker-compose.prod.yml` (T9) adds the same three services with named
   volumes, so a redeploy doesn't erase ingested profiles or downloaded models.
 - The backend image needs **`git`** for shallow clones (add it to
@@ -393,11 +449,18 @@ run(course_id, question_text, config):
     if config.generation_model not in ollama.list_models() → ModelNotAvailable
     messages   = [system: config.system_prompt (literal),
                   user:   prompt.build(kept, question_text)]
-    answer     = ollama.chat(config.generation_model, messages,
+    async with generation_gate.acquire(priority=caller):    # one gate for both paths (below)
+        answer = ollama.chat(config.generation_model, messages,
                              num_ctx, temperature=0, seed, num_predict,
-                             stream=True, deadline=RAG_GENERATION_DEADLINE_S)     [timed]
+                             stream=True, deadline=budget_end)                    [timed]
     return RagResult(matched=true, chunks=kept, answer, metrics)
 ```
+
+`run()` first checks `config.ingestion_profile in PROFILES` and raises
+`UnknownProfile` otherwise, before any collection lookup. That way a collection
+left behind by a profile removed from code can't cause a `KeyError` (`500`).
+`ModelNotAvailable` compares tags after normalizing them (`llama3.2` ≡
+`llama3.2:latest`), so a valid model given without a tag isn't refused.
 
 - Collections are created with cosine distance (`hnsw:space = cosine`), and
   similarity = `1 - distance`, so the threshold is a cosine similarity.
@@ -406,16 +469,36 @@ run(course_id, question_text, config):
   `seed`, so a grader's rerun of the harness reproduces our committed report as
   closely as Ollama allows. `num_predict` (e.g. 512) caps runaway repetition,
   which on 4 vCPUs could otherwise run for minutes.
-- **A slow generation never fails the request.** The harness aborts the whole
-  run on *any* error: `run_one` calls `raise_for_status()`, `main()` turns
-  `HTTPStatusError` into `sys.exit(1)`, and `ReadTimeout` isn't caught at all.
-  Either way no report is written. So `ollama.chat` streams, with a deadline
-  `RAG_GENERATION_DEADLINE_S` (e.g. 120 s, well under the harness's 180 s). At
-  the deadline the stream is closed, and the endpoint returns `200` with the
-  text generated so far. The truncation is logged, and T10 reports how many
-  answers were cut off.
+- **A compare call always answers within the harness's 180 s.** The harness
+  aborts the whole run on *any* error: `run_one` calls `raise_for_status()`,
+  `main()` turns `HTTPStatusError` into `sys.exit(1)`, and `ReadTimeout` isn't
+  caught at all. Either way no report is written. Three rules keep a compare
+  call under that limit:
+  - **One generation gate for both paths.** Ollama runs one request at a time
+    (`OLLAMA_NUM_PARALLEL=1`), so a compare call would otherwise wait behind
+    whatever live answer is generating, plus a model swap. Every `ollama.chat`
+    goes through one process-wide `generation_gate`. Compare waiters always go
+    before live waiters, and only one live generation can be in progress, so a
+    compare call waits for at most one live answer.
+  - **Live answers pause during compare traffic.** The live path doesn't
+    generate at all if a compare call arrived in the last `RAG_COMPARE_QUIET_S`
+    (e.g. 300 s). It posts nothing, and the question waits for a person. During
+    a grading run the harness sends compare calls back to back, so live answering
+    pauses by itself; nobody has to turn it off. Live generations also get a
+    shorter deadline, `RAG_LIVE_DEADLINE_S` (e.g. 60 s), which bounds the one
+    live answer a compare call may wait behind.
+  - **The deadline is a total budget from request arrival.** `budget_end =
+    arrival + RAG_COMPARE_BUDGET_S` (e.g. 150 s). It covers embedding,
+    retrieval, waiting at the gate, loading the model and streaming. Generation
+    streams, and when the budget runs out the stream is closed and the endpoint
+    returns `200` with whatever text exists (possibly empty). Truncations are
+    logged, and T10 reports how many answers were cut off.
+
   *Rejected (second Goldfish run):* returning `504` on timeout. It ends the
   grader's re-run exactly like the timeout it was meant to avoid.
+  *Rejected (third Goldfish run):* a deadline on streaming alone with a separate
+  live-only semaphore. Time spent queued behind a live answer and loading the
+  model wasn't bounded, so a compare call could still pass 180 s.
 - **`cpu_percent`** comes from the change in `psutil.cpu_times()` between the
   start and end of the request (busy time ÷ total time), computed by us. We
   don't use `psutil.cpu_percent()`: it keeps one global baseline per process,
@@ -445,6 +528,7 @@ run(course_id, question_text, config):
 
   | Error | Status |
   |---|---|
+  | `UnknownProfile` (name not in `PROFILES`) | `422` |
   | `ModelNotAvailable` (model not pulled; the spec requires a 4xx) | `422` |
   | `ProfileNotIngested` (no collection for this course and profile) | `404` |
   | `ProfileStale` (collection hash ≠ profile in code) | `409` |
@@ -476,26 +560,30 @@ the staff app as `grader` sees the same behavior as a student.
 `questions` stores no author role, and the effective role from
 `require_course_member` is `STUDENT` for anyone using the student app
 (`X-App-Surface`). So the rule was unclear, and it hid the feature from staff.
-Its reason, keeping `seed_demo.py` from creating AI posts, mostly doesn't apply:
-seeding happens before ingestion (§10), so seeded questions find no collection
-and post nothing. To re-seed a course that is already ingested, set
-`RAG_LIVE_ENABLED=false` for the duration.
+Its reason, keeping `seed_demo.py` from creating AI posts, doesn't apply.
+`seed_demo.py` always creates **new** courses, so a seeded course has no
+collections when its questions are created. Each seeded question still
+schedules the background task, which finds no collection and posts nothing.
 
 ```
 answer_question(course_id, question_id):
     if not settings.RAG_LIVE_ENABLED: return
     if live_waiting >= RAG_LIVE_MAX_WAITING: log; return   # backlog cap: a person answers
-    async with live_generation_semaphore:              # Semaphore(1): one live answer at a time
-      try:
-        result = run(course_id, title + "\n\n" + body, live_config_from_settings())
+    live_waiting += 1                                  # before the first await
+    try:
+        if compare_seen_within(RAG_COMPARE_QUIET_S): log; return   # grading/eval traffic (§5.3)
+        result = run(course_id, title + "\n\n" + body, live_config_from_settings(),
+                     caller=LIVE, budget=RAG_LIVE_DEADLINE_S)
     except any error from Infinity / ChromaDB / Ollama / missing profile or model:
         log; return                                    # same as "no match"
+    finally:
+        live_waiting -= 1
     if not result.matched: return
     if is_refusal(result.answer): log; return
     with a new DB session:                             # the request's session is closed
         question = load(question_id)
         if question is None: return                    # deleted during generation
-        if question.status != OPEN or question has an AI post: return
+        if question.status != OPEN or question has an AI post (retracted included): return
         create_ai_post(question, result.answer, citations_from(result.chunks)[:3])
 ```
 
@@ -508,13 +596,16 @@ it during generation); (4) any failure or timeout posts nothing.
 with one model loaded (`OLLAMA_MAX_LOADED_MODELS=1`), so a burst of questions
 would queue generations ahead of compare calls, and alternating live
 `qwen2.5:1.5b` with compare `qwen2.5:3b` reloads the model each time. So:
-- live generation runs behind a process-wide `asyncio.Semaphore(1)`;
+- every generation goes through the shared `generation_gate`, with compare
+  first and at most one live generation at a time (§5.3);
+- live answering pauses itself while compare calls are arriving (§5.3);
 - if `RAG_LIVE_MAX_WAITING` (e.g. 5) tasks are already waiting, a new question
   gets no AI answer (logged) and waits for a person.
 
-Live answering stays on while the harness runs, because grading re-runs the
-harness on its own schedule and we can't turn anything off for it. The cost is
-noisier timing, which T10 states.
+`RAG_LIVE_ENABLED` stays on during grading. Grading re-runs the harness on its
+own schedule and we can't turn anything off for it, which is why the pause is
+automatic. T10 notes that timings can include one live answer in progress
+when a run starts.
 
 *Rejected (second Goldfish run):* a rate limit on `create_question` with the
 existing `limiter`. Its key function isn't per-user: in dev it returns a random
@@ -588,8 +679,9 @@ The system message is **only** the literal `system_prompt`. The user message:
 
 Fixed settings, the same for every configuration: `TOP_K`, the 3-citation
 limit, `OLLAMA_NUM_CTX`, the generation options (`temperature=0`, `seed`,
-`num_predict`), `RAG_GENERATION_DEADLINE_S`, `RAG_LIVE_MAX_WAITING`, and the
-chunking tokenizer (§6.2).
+`num_predict`), the time budgets (`RAG_COMPARE_BUDGET_S`,
+`RAG_LIVE_DEADLINE_S`, `RAG_COMPARE_QUIET_S`), `RAG_LIVE_MAX_WAITING`,
+`INFINITY_BATCH_SIZE`, and the chunking tokenizer (§6.2).
 
 ### 6.2 Ingestion profiles are a fixed list in code
 
@@ -633,26 +725,47 @@ passages (PDFs always use it).
 - Text beyond the model's limit is silently dropped when embedding, so the
   ingestion task **logs a warning** for any chunk over the limit (mostly long
   Q&A pairs, which are never split) and counts them in `index_syncs`.
+- The tokenizer file is baked into the image at
+  **`/opt/tokenizers/minilm/tokenizer.json`** (setting `CHUNK_TOKENIZER_PATH`),
+  outside `/app`. Dev Compose bind-mounts `./backend:/app`, which would hide
+  anything the build wrote under `/app`.
 
-The staff UI only picks profiles; it can't create or edit them. Changing a
-profile means giving it a new name.
+**Window boundaries and source locations.**
+- Fallback windows are counted in word-pieces, but **boundaries snap to the
+  nearest whitespace**, so a window never starts or ends mid-word. Text
+  Fragments only match whole words, so a fragment starting on a partial word
+  wouldn't highlight anything.
+- Every unit keeps its **character offsets into the source document**. A
+  window's `line_start`/`line_end` (markdown) or `page_start`/`page_end` (PDF,
+  from per-page offsets) are computed from its first and last character, so
+  windows inside an oversized section get their own exact location rather than
+  the section's.
 
-**Safeguard:** the collection's metadata stores the profile's `embedding_model`
-and `hash()` when the collection is created. At query time `run()` embeds with
-the model saved on the collection, so a query can never be embedded with a
-different model than the stored vectors.
+The staff UI only picks profiles; it can't create or edit them.
 
-The hash is per collection, but a collection holds every source's chunks. If
-re-syncing one source could update it, the other sources' chunks (built with
-the old chunker or model) would pass the check. So:
-- **Ingestion refuses to write into a collection whose stored hash differs**
-  from the profile in code, and records `last_error = "profile changed; rebuild
-  it"`. The hash is never updated in place.
-- A staff **"Rebuild profile"** action drops `course_{id}__{profile}` and
-  re-ingests every source of the course (resources and Q&A) under that profile.
-- At query time, a mismatch still raises `ProfileStale` (§5.3). That covers a
-  profile changed in code and deployed with no re-sync since.
+**Changing a profile means giving it a new name, and CI enforces it.** A unit
+test, `test_profile_hashes_pinned`, lists each profile's expected `hash()`. Any
+change to a profile's ingestion settings under the same name fails the merge
+request's pipeline. Whoever made the change then adds a new profile name and
+ingests it into a new collection. This turns a problem that would otherwise show
+up on the VM, as `409`s during a grading run, into a red pipeline before merge.
+Adding a profile adds a line to the test.
 
+**Safeguards that remain:**
+- The collection's metadata stores the profile's `embedding_model` and `hash()`
+  when the collection is created. At query time `run()` embeds with the model
+  saved on the collection, so a query can never be embedded with a different
+  model than the stored vectors.
+- Ingestion refuses to write into a collection whose stored hash differs
+  (`last_error = "profile changed"`). The hash is never updated in place, so a
+  collection can't hold chunks from two versions of a profile. With the CI test
+  this only happens in local dev while tuning; the fix there is to drop the dev
+  ChromaDB volume.
+- At query time, a mismatch still raises `ProfileStale` (§5.3) as a last check.
+
+*Rejected (third Goldfish run):* a staff "Rebuild profile" action. With the CI
+test, a profile can't change under its own name on `production`, so the action
+would only exist for a case the pipeline already blocks.
 *Rejected:* storing the hash on each `index_syncs` row and leaving non-matching
 rows out of `current_sync_ids` (more precise, but after a profile change the
 collection quietly serves only part of the sources until each is re-synced).
@@ -842,7 +955,7 @@ see both versions).
 A Resources page in the staff app: register a URL resource, upload a file or
 zip (with the "Where can people view this?" field), re-sync with a profile
 picker (default: every profile the source is already ingested under; the live
-profile for a new source), re-index Q&A, "Rebuild profile" (§6.2), delete. The
+profile for a new source), re-index Q&A, delete. The
 list shows each source's per-profile `last_synced_at`, `chunk_count`,
 `last_error` and the version-mismatch flag. After a sync click, the page polls
 every ~5 s until `last_synced_at` or `last_error_at` is later than the click,
@@ -901,25 +1014,26 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 
 | File | Change |
 |---|---|
-| `backend/app/models/qa.py` | `Post`: `AI` role, nullable author, `citations` |
+| `backend/app/models/qa.py` | `Post`: `AI` role, nullable author, `citations` as `JSON(none_as_null=True)`, `retracted_at`, `retracted_by_user_id` |
 | `backend/app/models/resource.py` (new) | `Resource`, `IndexSync` |
 | `backend/app/models/__init__.py` | export new models |
-| `backend/app/migrations/versions/002_rag.py` (new) | enum, nullable column, `citations`, the three CHECKs, `resources`, `index_syncs` |
+| `backend/app/migrations/versions/002_rag.py` (new) | enum, nullable column, `citations`, retraction columns, the three CHECKs (author, citations, retraction), `resources`, `index_syncs` |
 | `backend/app/schemas/qa.py` | `PostResponse.author` nullable, `Citation`, `citations` |
 | `backend/app/schemas/rag.py` (new) | compare request/response (exact contract) |
 | `backend/app/schemas/resource.py` (new) | resource create/upload/list, sync status |
-| `backend/app/services/qa_service.py` | `serialize_post` null author and citations; `has_ai_answer` on question summaries |
+| `backend/app/services/qa_service.py` | `serialize_post` null author and citations; retracted posts hidden for students and collapsed for staff; `has_ai_answer` (ignoring retracted) on question summaries; `retract_ai_post`; `set_post_accepted` drops the thread's `historical_qa` chunks on un-accept (§4.6) |
 | `backend/app/schemas/qa.py` `QuestionSummary` | `has_ai_answer` |
 | `backend/app/services/ai_answer_service.py` (new) | `answer_question`, `create_ai_post` |
 | `backend/app/services/resource_service.py` (new) | resource CRUD, sync status |
 | `backend/app/services/rag/__init__.py`, `clients.py`, `profiles.py`, `prompt.py`, `pipeline.py`, `chunking.py`, `fetchers.py`, `ingestion.py` (new) | §5.2 |
-| `backend/app/routers/qa.py` | `create_question` schedules the background task |
+| `backend/app/routers/qa.py` | `create_question` schedules the background task; new staff-only `PATCH …/posts/{post_id}/retract` |
 | `backend/app/routers/rag.py` (new) | compare endpoint, staff-only `GET /courses/{course_id}/rag/health` |
 | `backend/app/routers/resources.py` (new) | resource and re-index endpoints |
 | `backend/app/main.py` | include the new routers |
 | `backend/app/config.py` | `RAG_LIVE_*`, `OLLAMA_URL`, `INFINITY_URL`, `CHROMA_URL`, `OLLAMA_NUM_CTX`, `RAG_TOP_K`, `GITLAB_HOST`, `GITLAB_ACCESS_TOKEN` |
 | `backend/requirements.txt` | ChromaDB HTTP client (same version as the server image), HTML parser, PDF text extraction (per-page), `tokenizers` (chunk-size counting, §6.2), `psutil` (`cpu_percent`) |
-| `backend/Dockerfile` | install `git`; download MiniLM's `tokenizer.json` at build time from a pinned Hugging Face revision, so the backend never downloads it at runtime |
+| `backend/Dockerfile` | install `git`; download MiniLM's `tokenizer.json` at build time from a pinned Hugging Face revision to `/opt/tokenizers/minilm/` (outside the `/app` bind mount), so the backend never downloads it at runtime |
+| `backend/app/config.py` (also) | `RAG_COMPARE_BUDGET_S`, `RAG_LIVE_DEADLINE_S`, `RAG_COMPARE_QUIET_S`, `RAG_LIVE_MAX_WAITING`, `INFINITY_BATCH_SIZE`, `CHUNK_TOKENIZER_PATH` |
 | `backend/app/*/README.md` | describe the new modules |
 
 **Frontend**
@@ -929,7 +1043,7 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 | `frontend/student/src/lib/types.ts`, `frontend/staff/src/lib/types.ts` | `AI` role, nullable author, `citations` |
 | `frontend/student/src/pages/QuestionDetailPage.tsx` | AI badge, null author, citations block, polling when `justAsked` |
 | `frontend/student/src/pages/AskQuestionPage.tsx` | navigate with `{ justAsked: true }` |
-| `frontend/staff/src/pages/QuestionDetailPage.tsx` | AI badge, null author, citations block |
+| `frontend/staff/src/pages/QuestionDetailPage.tsx` | AI badge, null author, citations block, "Retract AI answer" button, collapsed retracted posts |
 | `frontend/staff/src/pages/QuestionsPage.tsx` | "AI answered" badge and filter |
 | `frontend/staff/src/pages/ResourcesPage.tsx` (new), `frontend/staff/src/App.tsx`, staff nav | resource management |
 
@@ -942,7 +1056,7 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 | `docker-compose.prod.yml` (T9) | same services, named volumes, no published ports |
 | `.env.template` | new variables (no secrets) |
 | `eval/configs.json` (new, T6) | baseline and one-axis comparisons |
-| `tests/unit/…`, `tests/integration/…` | §11 |
+| `tests/unit/…`, `tests/integration/…` | §11, including `test_profile_hashes_pinned` (§6.2) |
 
 ---
 
@@ -970,14 +1084,26 @@ must hold **at all times**:
   (§12).
 
 `GET /api/courses/{course_id}/rag/health` checks all of this for the eval
-course: services up,
-models present, each eval profile's collection present with a matching hash,
-and no version mismatch. We check it before each grading window.
+course: services up, models present, each eval profile's collection present
+with a matching hash, and no version mismatch.
+
+Two everyday events break it for a while, so each has a checklist step:
+- **Starting the VM** (the deployment guide says to stop it after every work
+  session): Infinity takes minutes to reload gte-Qwen2, and compare returns `503`
+  until then. Before each grading window (the preliminary run, the due-date
+  night, any slip-day nights), start the VM early and **wait for `rag/health` to
+  be green**.
+- **Every deploy to `production`**: wait for `rag/health` to be green before
+  leaving it. Profile changes can't cause a mismatch, because the CI test in
+  §6.2 blocks them.
+
+During grading windows, in the eval course: no accept or un-accept changes and
+no re-index (§4.6).
 
 **One-time T6 setup** (on the VM):
-- Run `scripts/seed_demo.py` so the seeded threads are in the course that
-  `eval/configs.json`'s `course_id` points to. Seed before ingesting, so seeded
-  questions find no collection and get no AI answer (§5.4).
+- Run `scripts/seed_demo.py`. It creates new courses and prints their ids; put
+  the id of the course holding the seeded threads into `eval/configs.json`'s
+  `course_id`.
 - Upload the eval data as in §3.2 and ingest it under every profile in
   `eval/configs.json`.
 - Re-index Q&A threads under every eval profile (otherwise q12 and q13 can't
@@ -988,8 +1114,8 @@ and no version mismatch. We check it before each grading window.
   **rank and score of the expected chunk** per question (see §12, axis 2).
 - Check the course's `rag/health`, then run the harness.
 
-Live answering and re-syncs stay enabled throughout. T10 notes that timings are
-noisier because of it.
+Live answering stays enabled throughout; it pauses by itself while compare
+calls arrive (§5.3).
 
 ---
 
@@ -1003,7 +1129,12 @@ noisier because of it.
 - `is_refusal` on sample refusals, real answers, and partial answers that
   contain a refusal phrase mid-answer (not suppressed).
 - Chunkers: markdown sections keep correct line ranges; PDF pages tracked;
-  Q&A pairs never split.
+  Q&A pairs never split; a window that splits an oversized markdown section gets
+  its own exact line range; window boundaries never fall mid-word.
+- `test_profile_hashes_pinned`: each profile's `hash()` equals its pinned value.
+- Model tag normalization (`llama3.2` ≡ `llama3.2:latest`).
+- Generation gate: a waiting compare call goes before waiting live tasks; live
+  is skipped after a recent compare call.
 - URL checks: private, loopback, link-local and metadata addresses refused;
   repo URLs off `GITLAB_HOST` refused.
 
@@ -1013,11 +1144,19 @@ noisier because of it.
   citations (4 entries, missing field, duplicate rank) are rejected by the
   `Citation` model.
 - Deleting a user who has posts still fails as before.
+- After the migration, an ordinary student post (and staff post) is created
+  normally, i.e. `citations` is stored as SQL `NULL`, not JSON `null`.
+- Retraction: staff can retract an AI post (and it's un-accepted); retracting a
+  human post → `422`; students → `403`; students don't see the retracted post;
+  `answer_question` doesn't answer the thread again.
+- Un-accepting an answer removes that thread's `historical_qa` chunks from every
+  profile's collection.
 - Live answering: a match posts one AI answer with ≤3 citations, for a question
   asked from either app (student and staff surface); no match, a refusal, a
   closed or deleted thread, a stale profile, a full backlog or a service error
   posts nothing; the question is created even when every RAG service is down.
-- Generation past the deadline returns `200` with the partial answer.
+- A compare call whose budget runs out (including time waiting behind a live
+  generation) returns `200` with the partial answer, within the budget.
 - `cpu_percent` is unaffected by a concurrent request.
 - The backend starts and `/api/health` passes with Ollama, Infinity and
   ChromaDB stopped.
@@ -1027,12 +1166,20 @@ noisier because of it.
 - Staff accept an AI answer through the existing endpoint.
 - Compare endpoint: exact response shape; creates no rows; unknown profile or
   unpulled model → `422`; profile not ingested → `404`; stale profile → `409`;
-  service down → `503`; non-staff → `403`.
+  service down → `503`; non-staff → `403`; a leftover collection for a profile
+  removed from code → `422`, not `500`.
 - Re-sync: searches never see two versions; a failed sync keeps the old one; a
   second sync while one runs → `409`; deleting a syncing resource → `409`; one
   failing profile doesn't stop the others; ingestion into a collection with a
-  different hash is refused; "Rebuild profile" re-ingests every source.
+  different hash is refused.
 - Access: another course's `resource_id` → `404`.
+
+**Manual, against our real GitLab** (before writing ingestion code)
+- A markdown citation `…/-/blob/{branch}/{path}?plain=1#L12-L30` opens the
+  source view with lines 12–30 highlighted.
+- A PDF citation `…/-/raw/{branch}/{path}#page=4` opens page 4 in the browser's
+  PDF viewer, including for a private repo while signed in. If either fails,
+  adjust §3.1 before building it.
 
 ---
 
