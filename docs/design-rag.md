@@ -322,8 +322,9 @@ on 2026-10-17.
   and the grader login down because of an optional feature. Instead
   `clients.py` treats an unreachable service as unavailable: the live path posts
   nothing, ingestion records `last_error`, and compare returns `503`.
-  `/api/health` stays as it is; a separate staff-only `GET /api/rag/health`
-  reports each service.
+  `/api/health` stays as it is; a separate staff-only
+  `GET /api/courses/{course_id}/rag/health` reports each service, plus the
+  course's profiles and models (§10).
 - Each service still has a healthcheck, for `docker compose ps` and the T5
   checks: Ollama `ollama list`; Infinity `GET /health`; ChromaDB its heartbeat
   endpoint (the path depends on the version; check it against the pinned image).
@@ -350,7 +351,7 @@ on 2026-10-17.
 | `services/rag/pipeline.py` | `RagConfig`, `RagResult`, `run()`, `is_refusal()`. |
 | `services/rag/chunking.py` | Structural splitting per type plus the profile's fallback chunker. |
 | `services/rag/fetchers.py` | Web fetch with the address check, shallow clone, upload/zip parsing, historical Q&A reader. |
-| `services/rag/ingestion.py` | The ingestion task: lock, fetch, chunk, embed, insert, switch, clean up. |
+| `services/rag/ingestion.py` | The ingestion task and sync registry: claim, fetch, chunk, embed, insert, switch, clean up. |
 | `services/ai_answer_service.py` | The live background task and `create_ai_post`. |
 | `services/resource_service.py` | Resource create/list/delete and `index_syncs` reads. |
 | `routers/rag.py` | `POST /courses/{course_id}/rag/compare`. |
@@ -394,7 +395,7 @@ run(course_id, question_text, config):
                   user:   prompt.build(kept, question_text)]
     answer     = ollama.chat(config.generation_model, messages,
                              num_ctx, temperature=0, seed, num_predict,
-                             timeout=RAG_GENERATION_TIMEOUT_S)                    [timed]
+                             stream=True, deadline=RAG_GENERATION_DEADLINE_S)     [timed]
     return RagResult(matched=true, chunks=kept, answer, metrics)
 ```
 
@@ -404,17 +405,31 @@ run(course_id, question_text, config):
 - **Generation is deterministic and bounded.** `temperature=0` and a fixed
   `seed`, so a grader's rerun of the harness reproduces our committed report as
   closely as Ollama allows. `num_predict` (e.g. 512) caps runaway repetition,
-  which on 4 vCPUs could otherwise run for minutes. `RAG_GENERATION_TIMEOUT_S`
-  (e.g. 120 s) is well under the harness's 180 s request timeout, because the
-  harness doesn't catch `httpx.ReadTimeout`: one slow call would crash the run
-  before any report is written. On timeout, compare returns `504`, so the
-  harness reports an HTTP error and the run can be repeated.
-- **`cpu_percent`:** `psutil.cpu_percent()` sampled over the request inside the
-  backend container. Docker doesn't namespace `/proc/stat`, so this measures the
-  whole VM, including Ollama and Infinity, which is what we want. T10 states
-  that it's VM-wide, so other load on the VM is included. *Rejected:* mounting
-  the Docker socket to read per-container stats (gives the backend root-level
-  control of the host).
+  which on 4 vCPUs could otherwise run for minutes.
+- **A slow generation never fails the request.** The harness aborts the whole
+  run on *any* error: `run_one` calls `raise_for_status()`, `main()` turns
+  `HTTPStatusError` into `sys.exit(1)`, and `ReadTimeout` isn't caught at all.
+  Either way no report is written. So `ollama.chat` streams, with a deadline
+  `RAG_GENERATION_DEADLINE_S` (e.g. 120 s, well under the harness's 180 s). At
+  the deadline the stream is closed, and the endpoint returns `200` with the
+  text generated so far. The truncation is logged, and T10 reports how many
+  answers were cut off.
+  *Rejected (second Goldfish run):* returning `504` on timeout. It ends the
+  grader's re-run exactly like the timeout it was meant to avoid.
+- **`cpu_percent`** comes from the change in `psutil.cpu_times()` between the
+  start and end of the request (busy time ÷ total time), computed by us. We
+  don't use `psutil.cpu_percent()`: it keeps one global baseline per process,
+  so a concurrent live task or second request calling it would reset that
+  baseline mid-request. Docker doesn't namespace `/proc/stat`, so this measures
+  the whole VM, including Ollama and Infinity, which is what we want. T10 says
+  it's VM-wide, so other load (live answers, ingestion) is included.
+  *Rejected:* mounting the Docker socket to read per-container stats (gives the
+  backend root-level control of the host).
+- **Model reloads show up in timings.** With `OLLAMA_MAX_LOADED_MODELS=1`, the
+  first call after switching models (e.g. to `qwen2.5:3b` for axis 5, and back)
+  includes loading it. `OLLAMA_KEEP_ALIVE=-1` keeps the loaded model from being
+  unloaded between runs, but a switch still costs one load. T10 notes this
+  effect on one question per affected run.
 - Metric names are the response contract's names everywhere, internally too,
   so `schemas/rag.py` needs no mapping. The harness reads them with
   `.get(name, 0)`, so a misspelled name would show up as 0, not as an error.
@@ -426,10 +441,20 @@ run(course_id, question_text, config):
   instead.
 - `matched` depends only on the threshold. The spec says axes 4 and 5 leave
   retrieval hit rate and no-match accuracy "equal to baseline by construction".
-- Errors: `ProfileNotIngested` and `ModelNotAvailable` → `404`/`422`,
-  `ProfileStale` → `409` ("re-ingest this profile"), service unavailable →
-  `503`, generation timeout → `504` on the compare endpoint (never a silent
-  fallback). On the live path they are logged and nothing is posted.
+- Errors on the compare endpoint (never a silent fallback):
+
+  | Error | Status |
+  |---|---|
+  | `ModelNotAvailable` (model not pulled; the spec requires a 4xx) | `422` |
+  | `ProfileNotIngested` (no collection for this course and profile) | `404` |
+  | `ProfileStale` (collection hash ≠ profile in code) | `409` |
+  | A service is unreachable | `503` |
+
+  Every one of these aborts a harness run, so the design doesn't rely on them
+  being rare. It makes them **impossible on a healthy deployment** (§10, "The
+  deployment is always harness-ready"). They stay errors because returning `200`
+  with `matched: false` would write a wrong report without any warning, which is
+  worse than no report. On the live path they are logged and nothing is posted.
 - `is_refusal(answer)` matches only when the answer **starts with** a refusal
   phrase ("I don't have enough information", "The provided context does not
   contain", …) **and** is short (e.g. under ~40 words). A useful partial answer
@@ -443,14 +468,23 @@ run(course_id, question_text, config):
 
 `routers/qa.create_question` commits the question, then schedules
 `ai_answer_service.answer_question(course_id, question_id)` with FastAPI
-`BackgroundTasks` and returns `201` as it does today. **Only questions whose
-author is a `STUDENT` in the course are answered.** Staff and admin questions
-(announcements, and every question `scripts/seed_demo.py` creates through the
-API) never trigger an AI answer, so seeding can't fill threads with AI posts.
+`BackgroundTasks` and returns `201` as it does today. **Every new question is
+answered, whoever asks it and from whichever app.** A grader checking T5 from
+the staff app as `grader` sees the same behavior as a student.
+
+*Rejected (second Goldfish run):* answering only `STUDENT` authors.
+`questions` stores no author role, and the effective role from
+`require_course_member` is `STUDENT` for anyone using the student app
+(`X-App-Surface`). So the rule was unclear, and it hid the feature from staff.
+Its reason, keeping `seed_demo.py` from creating AI posts, mostly doesn't apply:
+seeding happens before ingestion (§10), so seeded questions find no collection
+and post nothing. To re-seed a course that is already ingested, set
+`RAG_LIVE_ENABLED=false` for the duration.
 
 ```
 answer_question(course_id, question_id):
     if not settings.RAG_LIVE_ENABLED: return
+    if live_waiting >= RAG_LIVE_MAX_WAITING: log; return   # backlog cap: a person answers
     async with live_generation_semaphore:              # Semaphore(1): one live answer at a time
       try:
         result = run(course_id, title + "\n\n" + body, live_config_from_settings())
@@ -460,6 +494,7 @@ answer_question(course_id, question_id):
     if is_refusal(result.answer): log; return
     with a new DB session:                             # the request's session is closed
         question = load(question_id)
+        if question is None: return                    # deleted during generation
         if question.status != OPEN or question has an AI post: return
         create_ai_post(question, result.answer, citations_from(result.chunks)[:3])
 ```
@@ -474,10 +509,19 @@ with one model loaded (`OLLAMA_MAX_LOADED_MODELS=1`), so a burst of questions
 would queue generations ahead of compare calls, and alternating live
 `qwen2.5:1.5b` with compare `qwen2.5:3b` reloads the model each time. So:
 - live generation runs behind a process-wide `asyncio.Semaphore(1)`;
-- `create_question` gets a per-user rate limit with the existing `limiter`
-  (e.g. `10/minute`);
-- live answering is turned off (`RAG_LIVE_ENABLED=false`) while the harness runs
-  (T6 checklist, §10).
+- if `RAG_LIVE_MAX_WAITING` (e.g. 5) tasks are already waiting, a new question
+  gets no AI answer (logged) and waits for a person.
+
+Live answering stays on while the harness runs, because grading re-runs the
+harness on its own schedule and we can't turn anything off for it. The cost is
+noisier timing, which T10 states.
+
+*Rejected (second Goldfish run):* a rate limit on `create_question` with the
+existing `limiter`. Its key function isn't per-user: in dev it returns a random
+UUID (the limit never fires), and in prod `get_remote_address` sees nginx's
+container IP for every request, since uvicorn doesn't trust proxy headers from
+it. `10/minute` would have become a limit for the whole board. The backlog cap
+protects Ollama without that.
 
 A task is lost if the backend restarts mid-generation; the question then waits
 for a person, which is acceptable. `BackgroundTasks` run in the process that
@@ -544,7 +588,8 @@ The system message is **only** the literal `system_prompt`. The user message:
 
 Fixed settings, the same for every configuration: `TOP_K`, the 3-citation
 limit, `OLLAMA_NUM_CTX`, the generation options (`temperature=0`, `seed`,
-`num_predict`), `RAG_GENERATION_TIMEOUT_S`, and the chunking tokenizer (§6.2).
+`num_predict`), `RAG_GENERATION_DEADLINE_S`, `RAG_LIVE_MAX_WAITING`, and the
+chunking tokenizer (§6.2).
 
 ### 6.2 Ingestion profiles are a fixed list in code
 
@@ -592,11 +637,25 @@ passages (PDFs always use it).
 The staff UI only picks profiles; it can't create or edit them. Changing a
 profile means giving it a new name.
 
-**Safeguard:** at ingestion, the collection's metadata stores the profile's
-`embedding_model` and `hash()`. At query time `run()` embeds with the model
-saved on the collection, so a query can never be embedded with a different
-model than the stored vectors. A hash mismatch is reported as a stale
-collection that needs re-ingesting.
+**Safeguard:** the collection's metadata stores the profile's `embedding_model`
+and `hash()` when the collection is created. At query time `run()` embeds with
+the model saved on the collection, so a query can never be embedded with a
+different model than the stored vectors.
+
+The hash is per collection, but a collection holds every source's chunks. If
+re-syncing one source could update it, the other sources' chunks (built with
+the old chunker or model) would pass the check. So:
+- **Ingestion refuses to write into a collection whose stored hash differs**
+  from the profile in code, and records `last_error = "profile changed; rebuild
+  it"`. The hash is never updated in place.
+- A staff **"Rebuild profile"** action drops `course_{id}__{profile}` and
+  re-ingests every source of the course (resources and Q&A) under that profile.
+- At query time, a mismatch still raises `ProfileStale` (§5.3). That covers a
+  profile changed in code and deployed with no re-sync since.
+
+*Rejected:* storing the hash on each `index_syncs` row and leaving non-matching
+rows out of `current_sync_ids` (more precise, but after a profile change the
+collection quietly serves only part of the sources until each is re-synced).
 
 *Rejected:* profiles as staff-editable database rows (editing one after
 ingestion leaves vectors that don't match its definition); create-only database
@@ -628,9 +687,15 @@ run the compare endpoint on the `sliding-window` profile with
 `similarity_threshold: 0` and record the score of the expected chunk for each
 of the 13 answerable questions and the top score for q14 (no match). Choose a
 baseline that keeps most answerable questions above it and q14 below it, and
-use that value in both `eval/configs.json` and the code default. Since q14 is
-the only no-match question, also try a few off-topic questions by hand so the
-threshold isn't fitted to a single example. Once T6 picks a winner, **change the
+use that value in both `eval/configs.json` and the code default.
+
+That tunes the threshold on the same questions the harness grades, with only
+one negative. So we also commit **`eval/heldout_offtopic.json`**: ~10 off-topic
+or out-of-scope questions written *before* looking at their scores (e.g.
+another course's material, campus logistics the syllabus doesn't cover). We
+record each one's top score under the chosen threshold, and T10 reports how
+many would have been answered. That shows whether the threshold generalizes or
+only fits q14. Once T6 picks a winner, **change the
 code defaults in a merge request linked to `eval/report.md`** and remove the
 override, so the repo matches what's deployed. If a course hasn't ingested the
 live profile, live answering logs it and posts nothing.
@@ -683,7 +748,7 @@ least three profiles for T6, each with its own result).
 |---|---|
 | URL checks: `http(s)` only; resolve and refuse private, loopback and link-local addresses; repos must be on `GITLAB_HOST` | Request → `422` |
 | Uploads: 50 MB total (matching nginx's `client_max_body_size` on `/api/`), a limit on files per zip, allowed types (`.html`, `.md`, `.pdf`, `.zip`), zip entries without `..`, absolute paths or symlinks; **caps on total uncompressed size (e.g. 200 MB) and per-entry size, checked while streaming each entry** (not from the zip's declared sizes), so a zip bomb can't exhaust memory; parse into documents in memory (in a thread, §5.2) | Request → `422` |
-| Acquire the Redis lock for the source | Request → `409` if held |
+| Claim the source in the in-process sync registry (§7.3) | Request → `409` if already syncing |
 | Fetch the page or shallow-clone the repo (`git clone --depth 1 --branch {repo_branch}`, with the limits in §8) | Background |
 | Chunk, embed in batches, insert, switch, clean up — once per requested profile | Background |
 
@@ -693,41 +758,46 @@ are lost and staff upload again.
 ### 7.3 The ingestion task
 
 ```
-ingest(course_id, source_key, documents_or_fetch_spec, profiles, lock_id):
+ingest(course_id, source_key, documents_or_fetch_spec, profiles):
     try:
         documents = documents_or_fetch_spec if already parsed else fetch(...)
             on failure: record last_error/last_error_at for every requested profile; return
         content_hash = hash(documents)  (commit SHA for repos)
         for profile in profiles:                       # one at a time: limits CPU taken from Ollama
             try:
-                chunks  = chunk(documents, profile)     # structural split + profile fallback
+                if collection exists and its hash != profile.hash: raise ProfileChanged   # §6.2
+                units   = to_thread(split_units, documents, profile)     # sync: structural split → units
+                if profile's fallback is semantic:
+                    unit_vecs = await infinity.embed(units, profile.embedding_model)   # async
+                chunks  = to_thread(merge_units, units, unit_vecs?, profile)  # sync: windows / semantic merge
                 sync_id = new uuid
                 for batch in chunks:
-                    vectors = infinity.embed(profile.document_prefix + text, profile.embedding_model)
-                    chroma.add(collection, ids, vectors, metadata incl. sync_id)   # not yet visible
-                    redis.expire(lock)                   # keep the lock alive for slow models
+                    vectors = await infinity.embed(profile.document_prefix + text, profile.embedding_model)
+                    await chroma.add(collection, ids, vectors, metadata incl. sync_id)   # not yet visible
                 UPDATE index_syncs SET current_sync_id = sync_id, content_hash, chunk_count,
                        last_synced_at = now(), last_error = NULL ...      # the switch (upsert on first sync)
-                chroma.delete(collection, where={source_key, sync_id ≠ current})   # also removes leftovers
+                await chroma.delete(collection, where={source_key, sync_id ≠ current})   # also removes leftovers
             except error:
                 record last_error/last_error_at for this profile; continue        # others still run
     finally:
-        release the lock
+        del syncing[(course_id, source_key)]
 ```
 
-- **Lock:** `SET sync_lock:{course_id}:{source_key} <lock_id> NX EX 3600`, taken
-  in the request and released in `finally`; it expires on its own after a crash.
-  One lock per source covers the whole multi-profile action.
-  - Release and `expire` are **compare-and-act on `lock_id`** (a small Lua
-    script), so a task whose lock already expired can't delete or extend a lock
-    another task now holds.
-  - Redis runs with `maxmemory-policy allkeys-lru`, so a lock key could be
-    evicted under memory pressure. **Accepted risk:** the Redis data is small
-    (rate limits, sessions) against a 512 MB cap, and the worst case is two
-    syncs of one source overlapping, which the `sync_id` switch keeps
-    consistent (last switch wins; leftovers are cleaned up on the next sync).
-  - **Deleting a resource while it syncs** returns `409` (the delete checks the
-    lock).
+- **Chunking is three steps** so that semantic chunking, which needs embeddings,
+  doesn't call Infinity from inside a thread: a sync split into units (sentences
+  or paragraphs), async embedding of those units (semantic profiles only), and
+  a sync merge into chunks.
+- **Sync registry:** an in-process `syncing: dict[(course_id, source_key) →
+  task]`, changed only while holding one `asyncio.Lock`. The request claims the
+  source (`409` if it's already present), and the task removes it in `finally`.
+  One claim covers the whole multi-profile action. A restart clears the
+  registry, which is correct, because the task is lost too.
+  **Deleting a resource while it syncs** returns `409`.
+  *Rejected (second Goldfish run):* a Redis lock (`SET … NX EX`). It needed a Lua
+  compare-and-delete, TTL refreshes per batch and an accepted `allkeys-lru`
+  eviction risk, to support several processes. The rest of the design already
+  requires one process (`BackgroundTasks`, the live semaphore, in-memory
+  uploads; §5.4).
 - **Re-sync never shows two versions or a gap.** New chunks are invisible until
   the switch, because every search filters on the current `sync_id`s (§5.3).
   Old chunks are invisible after the switch even before cleanup. A failed sync
@@ -735,17 +805,16 @@ ingest(course_id, source_key, documents_or_fetch_spec, profiles, lock_id):
 - **Profiles succeed or fail independently.** A failure in the slow
   `embedding-alt` profile shouldn't block the live profile from getting an
   updated syllabus. The consequence is that profiles of one source can be on
-  different versions, which would affect a T6 comparison. The staff resource
-  list flags a source whose profiles have different `content_hash` values, and
-  the T6 checklist requires the eval profiles to match before running the
-  harness.
+  different versions, which would affect a T6 comparison. To keep that from
+  happening by accident, **re-sync defaults to every profile the source is
+  already ingested under** (§7.5), not only the live profile. The staff resource
+  list still flags a source whose profiles have different `content_hash` values.
 - **Deleting a resource** deletes its chunks from each of the course's
   collections by `resource_id`; `index_syncs` rows go through the cascade.
 
 *Rejected:* a conditional switch (`UPDATE … WHERE current_sync_id = :old`) to
 allow concurrent syncs (correct but more complex, and leaves chunks from crashed
-runs); a Python `set` of running sources (only works with one backend process);
-switching all profiles together (a broken profile would block the others);
+runs); switching all profiles together (a broken profile would block the others);
 insert-then-delete without the `sync_id` filter (searches during a re-sync could
 see both versions).
 
@@ -772,7 +841,8 @@ see both versions).
 
 A Resources page in the staff app: register a URL resource, upload a file or
 zip (with the "Where can people view this?" field), re-sync with a profile
-picker (default: the live profile; several allowed), re-index Q&A, delete. The
+picker (default: every profile the source is already ingested under; the live
+profile for a new source), re-index Q&A, "Rebuild profile" (§6.2), delete. The
 list shows each source's per-profile `last_synced_at`, `chunk_count`,
 `last_error` and the version-mismatch flag. After a sync click, the page polls
 every ~5 s until `last_synced_at` or `last_error_at` is later than the click,
@@ -843,13 +913,13 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 | `backend/app/services/ai_answer_service.py` (new) | `answer_question`, `create_ai_post` |
 | `backend/app/services/resource_service.py` (new) | resource CRUD, sync status |
 | `backend/app/services/rag/__init__.py`, `clients.py`, `profiles.py`, `prompt.py`, `pipeline.py`, `chunking.py`, `fetchers.py`, `ingestion.py` (new) | §5.2 |
-| `backend/app/routers/qa.py` | `create_question` schedules the background task (student authors only) and gets a rate limit |
-| `backend/app/routers/rag.py` (new) | compare endpoint, staff-only `GET /rag/health` |
+| `backend/app/routers/qa.py` | `create_question` schedules the background task |
+| `backend/app/routers/rag.py` (new) | compare endpoint, staff-only `GET /courses/{course_id}/rag/health` |
 | `backend/app/routers/resources.py` (new) | resource and re-index endpoints |
 | `backend/app/main.py` | include the new routers |
 | `backend/app/config.py` | `RAG_LIVE_*`, `OLLAMA_URL`, `INFINITY_URL`, `CHROMA_URL`, `OLLAMA_NUM_CTX`, `RAG_TOP_K`, `GITLAB_HOST`, `GITLAB_ACCESS_TOKEN` |
-| `backend/requirements.txt` | ChromaDB HTTP client (same version as the server image), HTML parser, PDF text extraction (per-page) |
-| `backend/Dockerfile` | install `git` |
+| `backend/requirements.txt` | ChromaDB HTTP client (same version as the server image), HTML parser, PDF text extraction (per-page), `tokenizers` (chunk-size counting, §6.2), `psutil` (`cpu_percent`) |
+| `backend/Dockerfile` | install `git`; download MiniLM's `tokenizer.json` at build time from a pinned Hugging Face revision, so the backend never downloads it at runtime |
 | `backend/app/*/README.md` | describe the new modules |
 
 **Frontend**
@@ -867,7 +937,8 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 
 | File | Change |
 |---|---|
-| `docker-compose.yml` | `ollama`, `infinity`, `chromadb`, volumes, backend `depends_on` |
+| `docker-compose.yml` | `ollama` (with `OLLAMA_KEEP_ALIVE=-1`), `infinity`, `chromadb`, volumes; backend gets the service URLs, **no** `depends_on` on them (§5.1) |
+| `eval/heldout_offtopic.json` (new, T6) | held-out off-topic questions for the threshold check (§6.3) |
 | `docker-compose.prod.yml` (T9) | same services, named volumes, no published ports |
 | `.env.template` | new variables (no secrets) |
 | `eval/configs.json` (new, T6) | baseline and one-axis comparisons |
@@ -886,22 +957,39 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 6. `ai_answer_service.py`, the background task in `create_question`, citations block and polling (T5).
 7. Tests (§11), then deployment of the new services (T9), then the eval runs (T6).
 
-**T6 checklist** (on the VM, before running the harness):
+**The deployment is always harness-ready.** Grading re-runs the harness against
+the VM on its own schedule (the preliminary run and the due-date night), so we
+can't be there to prepare it. From the first T6 run until grading ends, these
+must hold **at all times**:
+- every profile in `eval/configs.json` is ingested and current (no
+  version-mismatch flag, no stale hash) for its `course_id`, including Q&A;
+- every `generation_model` in `eval/configs.json` is pulled into Ollama;
+- every embedding model, gte-Qwen2 included, is always loaded in the one
+  Infinity service. If it doesn't fit in memory, we choose a different
+  alternate model; we don't add a service that is only started for T6
+  (§12).
+
+`GET /api/courses/{course_id}/rag/health` checks all of this for the eval
+course: services up,
+models present, each eval profile's collection present with a matching hash,
+and no version mismatch. We check it before each grading window.
+
+**One-time T6 setup** (on the VM):
 - Run `scripts/seed_demo.py` so the seeded threads are in the course that
-  `eval/configs.json`'s `course_id` points to. (Seeded questions are created by
-  an admin, so they never trigger AI answers, §5.4.)
+  `eval/configs.json`'s `course_id` points to. Seed before ingesting, so seeded
+  questions find no collection and get no AI answer (§5.4).
 - Upload the eval data as in §3.2 and ingest it under every profile in
   `eval/configs.json`.
 - Re-index Q&A threads under every eval profile (otherwise q12 and q13 can't
   match).
-- Check that the resource list shows no version-mismatch flag (§7.3).
-- Pull every `generation_model` in `eval/configs.json` into Ollama.
-- Set the baseline threshold as in §6.3.
+- Set the baseline threshold as in §6.3, and record scores for
+  `eval/heldout_offtopic.json`.
 - Run each ingestion profile once at `similarity_threshold: 0` and record the
   **rank and score of the expected chunk** per question (see §12, axis 2).
-- Set `RAG_LIVE_ENABLED=false` and restart the backend while the harness runs,
-  so live answers don't queue ahead of compare calls or force model reloads.
-  Turn it back on afterwards.
+- Check the course's `rag/health`, then run the harness.
+
+Live answering and re-syncs stay enabled throughout. T10 notes that timings are
+noisier because of it.
 
 ---
 
@@ -925,10 +1013,12 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
   citations (4 entries, missing field, duplicate rank) are rejected by the
   `Citation` model.
 - Deleting a user who has posts still fails as before.
-- Live answering: a match posts one AI answer with ≤3 citations; no match, a
-  refusal, a closed thread, a stale profile, a service error or a staff-authored
-  question posts nothing; the question is created even when every RAG service
-  is down.
+- Live answering: a match posts one AI answer with ≤3 citations, for a question
+  asked from either app (student and staff surface); no match, a refusal, a
+  closed or deleted thread, a stale profile, a full backlog or a service error
+  posts nothing; the question is created even when every RAG service is down.
+- Generation past the deadline returns `200` with the partial answer.
+- `cpu_percent` is unaffected by a concurrent request.
 - The backend starts and `/api/health` passes with Ollama, Infinity and
   ChromaDB stopped.
 - Ingestion: a repo symlink to a file outside the clone is skipped; a zip whose
@@ -936,10 +1026,12 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
   in `truncated_chunk_count`.
 - Staff accept an AI answer through the existing endpoint.
 - Compare endpoint: exact response shape; creates no rows; unknown profile or
-  unpulled model → `4xx`; stale profile → `409`; generation timeout → `504`;
-  non-staff → `403`.
+  unpulled model → `422`; profile not ingested → `404`; stale profile → `409`;
+  service down → `503`; non-staff → `403`.
 - Re-sync: searches never see two versions; a failed sync keeps the old one; a
-  second sync while one runs → `409`; one failing profile doesn't stop the others.
+  second sync while one runs → `409`; deleting a syncing resource → `409`; one
+  failing profile doesn't stop the others; ingestion into a collection with a
+  different hash is refused; "Rebuild profile" re-ingests every source.
 - Access: another course's `resource_id` → `404`.
 
 ---
@@ -957,7 +1049,7 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
   only chunks above the threshold. So axis 2's hit rate partly shows where each
   model's scores sit relative to a threshold tuned for MiniLM, not only
   retrieval quality. We keep the spec's design (one threshold, held at baseline)
-  but also record the expected chunk's rank without a threshold (T6 checklist),
+  but also record the expected chunk's rank without a threshold (T6 setup, §10),
   so T10 can separate "worse retrieval" from "different score scale".
 - **Text Fragment fidelity:** our stripped text may differ from the rendered
   page (hidden elements, text split across elements), so some fragments may not
@@ -967,10 +1059,14 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 - **A mistyped link base URL** gives bad links quietly. Validate that it's an
   `http(s)` URL and show one resolved example link before ingesting.
 - **Memory and latency** on the 4 vCPU / 16 GB VM are estimates until measured
-  in the T5 infrastructure step (§5.1). If peak use exceeds ~13 GB, one option
-  is moving gte-Qwen2 into a second Infinity service under a Compose profile
-  started only for T6 runs. Not designed in, because the estimate says it fits.
-  Ingestion under `embedding-alt` slows live answers while it runs.
+  in the T5 infrastructure step (§5.1). If peak use exceeds ~13 GB, we choose a
+  smaller alternate model for axis 2 (and say why in T10). We don't run
+  gte-Qwen2 in a service started only for T6: grading can run when it's down,
+  and every `embedding-alt` call would then fail and abort the run. Ingestion
+  under `embedding-alt` slows live answers while it runs.
+- **No course deletion endpoint exists today.** If one is added, it must also
+  delete the course's `course_{id}__*` ChromaDB collections; the MySQL cascade
+  doesn't reach them.
 - **Single backend process** assumed by `BackgroundTasks` (§5.4). Moving to
   several workers would need a job queue.
 - **Version-dependent details to check against the pinned images:** the
