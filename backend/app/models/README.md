@@ -11,6 +11,7 @@ The JSON shapes the API returns are in [`../schemas/`](../schemas/).
 | `user.py` | `users` | `User` |
 | `course.py` | `courses`, `course_rosters`, `user_course_access` | `Course`, `CourseRoster`, `UserCourseAccess` |
 | `qa.py` | `categories`, `questions`, `question_categories`, `posts` | `Category`, `Question`, `QuestionCategory`, `Post` |
+| `resource.py` | `resources`, `index_syncs` | `Resource`, `IndexSync` |
 
 ## Relationships
 
@@ -19,20 +20,25 @@ User ──< UserCourseAccess >── Course ──< CourseRoster
  │                              │
  │                              ├──< Category ──< QuestionCategory >── Question
  │                              │                                         │
- ├──< Question (author) ────────┴──< Question ──< Post                    │
- └──< Post (author)                                                       │
+ ├──< Question (author) ────────┼──< Question ──< Post                    │
+ └──< Post (author)             │                                         │
+                                ├──< Resource ──< IndexSync               │
+                                └──< IndexSync (historical_qa)            │
 ```
 
-- A **course** owns its roster rows, access grants, categories and questions.
-  All of them use `cascade="all, delete-orphan"` and `ON DELETE CASCADE`, so
-  deleting a course deletes everything in it.
+- A **course** owns its roster rows, access grants, categories, questions,
+  resources and index syncs. All of them use `cascade="all, delete-orphan"` and
+  `ON DELETE CASCADE`, so deleting a course deletes everything in it.
 - A **question** owns its posts and category links the same way. `posts` is
   always ordered by `created_at`, so a thread reads top to bottom.
 - **Users are not cascaded.** `Question.author_user_id`, `Post.author_user_id`,
   `closed_by_user_id` and `accepted_by_user_id` reference `users.id` with no
-  `ON DELETE` rule, and the two author columns are non-nullable. Deleting a user
-  who has written a question or a post therefore fails at commit.
-  (`DELETE /api/admin/users/{id}` only blocks admins up front.)
+  `ON DELETE` rule. `Question.author_user_id` is non-nullable, and
+  `Post.author_user_id` may only be NULL on AI posts (`ck_posts_ai_author`).
+  Deleting a user who has written a question or a post therefore fails at
+  commit. (`DELETE /api/admin/users/{id}` only blocks admins up front.)
+  `retracted_by_user_id` and `Resource.created_by_user_id` are the exceptions:
+  `ON DELETE SET NULL`, so deleting that staff user keeps the record.
 
 ## `user.py`
 
@@ -87,6 +93,31 @@ Students and staff are both `USER` globally.
   app are stored as `STUDENT` (see `X-App-Surface` in
   [`../common/README.md`](../common/README.md)).
 
+  **AI posts** (`author_role = 'AI'`, `docs/design-rag.md` §4) are always
+  `ANSWER`s, so the existing accept flow works on them unchanged. Three CHECK
+  constraints, written by hand in `002_rag.py`, tie the RAG columns to them:
+  - `ck_posts_ai_author`: `author_user_id` is NULL exactly when the post is AI.
+    Code that reads `post.author` must handle `None`.
+  - `ck_posts_citations_ai_only`: only AI posts have `citations`, the 1–3
+    sources saved when the post was created. The column is
+    `JSON(none_as_null=True)`, so Python `None` is stored as SQL `NULL`.
+  - `ck_posts_retract_ai_only`: only AI posts can have `retracted_at`.
+
+## `resource.py`
+
+- **`Resource`**: course material staff register for ingestion: `type`
+  `SYLLABUS`, `SCHEDULE` or `REPO`, from `origin` `URL` (`fetch_url` set) or
+  `UPLOAD` (`link_base_url` set; no file is stored). `repo_branch` is only for
+  repos. CHECK constraints enforce those three rules. Its `source_key` is
+  `resource:{id}`.
+- **`IndexSync`**: the result of the last ingestion of one source under one
+  ingestion profile, unique on `(course_id, profile, source_key)`.
+  `source_key` is a resource's, or `historical_qa` (`HISTORICAL_QA_SOURCE_KEY`)
+  for the course's Q&A threads, which aren't a `Resource` row (`resource_id`
+  NULL). Chunks live only in ChromaDB. Search sees only chunks whose `sync_id`
+  is a row's `current_sync_id`, which is what makes a re-sync switch atomic.
+  A NULL `content_hash` forces the next sync to re-embed.
+
 ## Enum columns
 
 Fixed sets of values are MySQL `ENUM` columns, not lookup tables:
@@ -96,10 +127,12 @@ Fixed sets of values are MySQL `ENUM` columns, not lookup tables:
 | `users.role` | `ADMIN`, `USER` | `user_role` |
 | `user_course_access.role` | `STUDENT`, `STAFF` | `course_role` |
 | `questions.status` | `OPEN`, `CLOSED` | `question_status` |
-| `posts.author_role` | `STUDENT`, `STAFF` | `post_author_role` |
+| `posts.author_role` | `STUDENT`, `STAFF`, `AI` | `post_author_role` |
 | `posts.kind` | `ANSWER`, `FOLLOWUP` | `post_kind` |
+| `resources.type` | `SYLLABUS`, `SCHEDULE`, `REPO` | `resource_type` |
+| `resources.origin` | `URL`, `UPLOAD` | `resource_origin` |
 
-Adding a value (for example `AI` to `post_author_role`) means editing the
+Adding a value (as `002_rag.py` did with `AI`) means editing the
 `Enum(...)` here **and** writing an Alembic migration that alters the column.
 The schemas, serializers and frontend types that treat these as strings need
 updating too.
@@ -117,7 +150,8 @@ updating too.
    those changes by hand.
 4. Add the matching Pydantic schemas in [`../schemas/`](../schemas/).
 
-Today there is a single migration, `001_initial_schema.py`. The planned
-course-resource tables for RAG ingestion (`docs/design-rag.md`) belong here,
-and each should hang off `courses.id` with `ON DELETE CASCADE` like the
-existing course-owned tables.
+Migrations: `001_initial_schema.py`, then `002_rag.py` (AI posts, citations,
+retraction, `resources`, `index_syncs`). CHECK constraints are never
+autogenerated; write them by hand in the migration and mirror them in the
+model's `__table_args__`. `002_rag`'s downgrade refuses while any AI post
+exists, because `author_user_id` can't return to NOT NULL.

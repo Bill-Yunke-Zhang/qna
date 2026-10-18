@@ -11,9 +11,11 @@ from app.models import (  # noqa: F401
     Category,
     Course,
     CourseRoster,
+    IndexSync,
     Post,
     Question,
     QuestionCategory,
+    Resource,
     User,
     UserCourseAccess,
 )

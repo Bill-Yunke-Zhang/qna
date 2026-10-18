@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -120,20 +122,42 @@ class Post(Base):
     `author_role` snapshots the author's course role (STUDENT/STAFF) at the
     moment of posting, so a "staff answer" badge never retroactively changes
     if that person's course access is later revoked or altered.
+
+    AI posts (`author_role = 'AI'`, see docs/design-rag.md §4.1) have no
+    author user, carry the citations they were posted with, and are the only
+    posts staff can retract. The CHECK constraints below are mirrored by hand
+    in migration 002_rag; Alembic autogenerate doesn't detect them.
     """
 
     __tablename__ = "posts"
-    __table_args__ = (Index("ix_posts_question_created", "question_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_posts_question_created", "question_id", "created_at"),
+        # Also keeps admin delete_user failing for users who have posts, as it
+        # did when author_user_id was NOT NULL: the ORM nulls the author, and
+        # this rejects a non-AI post without one.
+        CheckConstraint(
+            "(author_role = 'AI') = (author_user_id IS NULL)", name="ck_posts_ai_author"
+        ),
+        CheckConstraint(
+            "author_role = 'AI' OR citations IS NULL", name="ck_posts_citations_ai_only"
+        ),
+        CheckConstraint(
+            "author_role = 'AI' OR retracted_at IS NULL",
+            name="ck_posts_retract_ai_only",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     question_id: Mapped[int] = mapped_column(
         ForeignKey("questions.id", ondelete="CASCADE"), nullable=False
     )
-    author_user_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("users.id"), nullable=False
+    # Never give this FK an ON DELETE action: MySQL rejects a CHECK on a column
+    # whose FK has one, and ck_posts_ai_author depends on it.
+    author_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
     )
     author_role: Mapped[str] = mapped_column(
-        Enum("STUDENT", "STAFF", name="post_author_role"), nullable=False
+        Enum("STUDENT", "STAFF", "AI", name="post_author_role"), nullable=False
     )
     kind: Mapped[str] = mapped_column(
         Enum("ANSWER", "FOLLOWUP", name="post_kind"), nullable=False
@@ -145,11 +169,29 @@ class Post(Base):
     )
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # none_as_null: without it SQLAlchemy writes Python None as the JSON value
+    # `null`, which isn't SQL NULL, and ck_posts_citations_ai_only would reject
+    # every human post that sets citations=None. Shape is validated by the
+    # Pydantic Citation model on the one write path.
+    citations: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    retracted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    retracted_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_posts_retracted_by_user_id"
+        ),
+        nullable=True,
+    )
 
     question: Mapped[Question] = relationship("Question", back_populates="posts")
-    author: Mapped[User] = relationship(
+    author: Mapped[User | None] = relationship(
         "User", back_populates="posts", foreign_keys=[author_user_id]
     )
     accepted_by: Mapped[User | None] = relationship(
         "User", foreign_keys=[accepted_by_user_id]
+    )
+    retracted_by: Mapped[User | None] = relationship(
+        "User", foreign_keys=[retracted_by_user_id]
     )
