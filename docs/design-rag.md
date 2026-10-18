@@ -235,8 +235,8 @@ changes.
   `raw_base` is `base` with `/-/blob/` replaced by `/-/raw/`. For an upload
   whose base isn't a GitLab blob URL, `raw_base = base`.
 
-Both behaviors are to be **checked against our real GitLab** (§11) before
-ingestion code is written.
+Both behaviors were **checked against our real GitLab on 2026-10-18** (§11),
+before any ingestion code was written, and both work.
 
 **Text Fragments.** `fragment_start` and `fragment_end` are the first and last
 ~5 words of the chunk's text as it appears after HTML stripping. If a chunk has
@@ -1477,6 +1477,13 @@ calls arrive (§5.3).
 - A PDF citation `…/-/raw/{branch}/{path}#page=4` opens page 4 in the browser's
   PDF viewer, including for a private repo while signed in. If either fails,
   adjust §3.1 before building it.
+
+**Result (2026-10-18): both pass.** Checked signed in, on this repo:
+`eval/sample_data/repo/p2-buzzer/instructions.md?plain=1#L48-L61` (q07's
+source) opened in the source view with lines 48–61 highlighted, and
+`eval/sample_data/repo/lecture-10/slides.pdf#page=15` (q10's source, via
+`/-/raw/`) opened on page 15 in the browser's PDF viewer. Signed out, both
+redirect to the GitLab sign-in page, because the repo is private (§8).
 
 ---
 
