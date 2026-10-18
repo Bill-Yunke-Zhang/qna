@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     OLLAMA_URL: str = "http://ollama:11434"
     INFINITY_URL: str = "http://infinity:7997"
     CHROMA_URL: str = "http://chromadb:8000"
+    # Timeout for embedding, model-list and vector-store calls. Generation has
+    # its own deadline per call (§5.3).
+    RAG_SERVICE_TIMEOUT_S: float = 60.0
+    # Texts per Infinity request; match Infinity's own INFINITY_BATCH_SIZE.
+    INFINITY_BATCH_SIZE: int = 16
 
     @property
     def cors_origins_list(self) -> list[str]:
