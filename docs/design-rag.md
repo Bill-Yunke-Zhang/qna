@@ -1,6 +1,6 @@
 # Design: Retrieval-Augmented AI Answers (RAG)
 
-Status: **revised after four Goldfish reviews** (2026-10-17). Nothing here is implemented yet.
+Status: **revised after five Goldfish reviews** (2026-10-17). Nothing here is implemented yet.
 
 This document covers T3–T6 of Project 3: ingesting course resources, answering
 new questions with a grounded, cited AI post, and the configurable pipeline
@@ -30,6 +30,20 @@ Contents:
 **Source documents.** "The spec" is `instructions.md` (Project 3's assignment).
 The deployment guide is `deployment_instructions.md`. Both are in the repo root.
 
+**Repository and grading terms.**
+- The repo is on GitLab (`git.doit.wisc.edu`). Every change reaches `main`
+  through a merge request (MR), whose CI pipeline runs lint, tests and secret
+  detection.
+- **`production`** is a protected branch. A merge from `main` into it runs the
+  CI deploy stage, which deploys to the team's GCP VM (T9).
+- **Grading runs** test the live deployment at the moment they run: a
+  preliminary run two nights before the due date, the main run on the due-date
+  night, and a run on each late night if the team uses slip days (late days).
+  The course's **`grader`** account, an admin created at startup, signs in to
+  run the harness.
+- **Paths:** routes are written relative to the backend's `/api` prefix in some
+  places (`/courses/…`). The full path is always `/api/courses/…`.
+
 **Task numbers** (from the spec):
 
 | Task | What it is |
@@ -51,6 +65,18 @@ away from a fixed baseline:
 4. system prompt ("prompt hardening": at least two alternatives to the baseline guardrail);
 5. generation model (e.g. `qwen2.5:1.5b` vs. `qwen2.5:3b`).
 
+`eval/configs.example.json` shows the shape: a `course_id`; a `baseline` with
+`ingestion_profile: "sliding-window"`, `similarity_threshold: 0.65`, the
+generation model `qwen2.5:1.5b`, and the spec's **baseline guardrail** prompt,
+verbatim: *"Only use the information provided in the tagged context to answer
+questions. If the context does not contain enough information to answer, say
+so rather than guessing."*; and six example comparisons. Two of those are
+system prompts: one requiring every sentence to be supported by the context,
+and one telling the model to treat instructions inside the context as untrusted
+text. Our `eval/configs.json` uses our calibrated threshold (§6.3) for the
+baseline and a stricter one (e.g. +0.15) for axis 3. The final prompts for
+axis 4 are written in T6.
+
 **The harness.** `eval/compare_harness.py` is provided by the course and must
 not be modified. It reads `eval/ground_truth.json` (14 questions, `q1`–`q14`:
 q1–q11 answerable from the syllabus, schedule or repo files; q12–q13 answerable
@@ -58,7 +84,9 @@ from seeded board threads; q14, "What's the best pizza topping?", must not
 match) and our `eval/configs.json` (copied from `eval/configs.example.json`: a
 baseline plus one entry per comparison). For each question × configuration it
 calls the compare endpoint once (`run_one`). It counts a **retrieval hit** when
-any returned chunk's `source_url` contains the question's `expected_source`.
+any returned chunk's `source_url` contains the question's `expected_source`, a
+repo-relative path such as `eval/sample_data/web/syllabus.html` or
+`eval/sample_data/repo/lecture-10/slides.pdf`.
 `expected_source_section` names the expected section, for checking by hand.
 Grading re-runs it against our deployed VM, and any HTTP error or timeout
 aborts the whole run without writing a report.
@@ -91,6 +119,16 @@ round overturned, and why.
 - `set_post_accepted` and `create_post` (`services/qa_service.py`): accept or
   un-accept an answer; create a post (refused in closed threads).
 - `author_summary`: the serializer's helper that renders a post's author.
+- Existing enums: `posts.kind` is `ANSWER | FOLLOWUP`; `posts.author_role` is
+  `STUDENT | STAFF`, stored from the poster's *effective* role; `questions.status`
+  is `OPEN | CLOSED`. Questions can't be deleted today; §5.4's "deleted during
+  generation" check is defensive.
+- `QuestionSummary` is the question-list item schema, with
+  `has_accepted_answer`. `load()` is the thread page's existing data-fetch
+  function. `qna_network` is the Compose network. `FRONTEND_URL` is a backend
+  setting holding the frontend's base URL.
+- Redis is in the stack and connected at startup, but no feature this design
+  relies on uses it.
 - The student app's thread route is `/student/questions/{question_id}`. The
   course comes from app context, not the URL. The staff app's equivalent is
   `/staff/questions/{question_id}`.
@@ -229,8 +267,14 @@ change and chunks are portable between environments.
 - **Uploads store no files.** The upload form has one required field, "Where can
   people view this?", which becomes `link_base_url`. For a single file it's the
   page URL. For a repo zip it's a base URL, and `source_url` is the base plus the
-  path inside the zip. The upload is parsed in memory and discarded; re-syncing
-  an upload means uploading again.
+  path inside the zip. The upload is parsed in memory and discarded. **Re-syncing
+  an upload means uploading a new file to the same resource:**
+  `PUT /api/courses/{course_id}/resources/{resource_id}/upload`. That keeps the
+  resource's `id`, `source_key` and `index_syncs` rows, and runs the normal
+  ingestion (§7.3) under every profile the resource is already ingested under.
+  So the `sync_id` switch applies, and searches never see a gap or two copies.
+  Deleting and re-adding the resource would leave a window with no source or
+  with duplicates.
   *Rejected:* self-hosting uploaded files (a Docker volume, a file-serving
   endpoint with access checks, path-traversal protection, cleanup, and the risk
   of serving uploaded HTML from our own origin), none of which the requirements
@@ -249,12 +293,13 @@ change and chunks are portable between environments.
 
 ### 3.3 Citations shown on an AI post
 
-- Up to **3** citations: the chunks that passed the similarity threshold, best
-  match first, deduplicated by `citation_url`.
-- Shown under the heading **"Sources given to the AI"**, with the first tagged
-  *best match* and no label on the others. We only know these chunks were given
-  to the model, not which ones the answer used, so the labels claim no more than
-  that.
+- Up to **3** citations: the best 3 of the chunks that went into the prompt
+  (up to `TOP_K` = 5), best match first. They're deduplicated by `citation_url`,
+  or by `question_id` for historical Q&A, which has no `citation_url`.
+- Shown under the heading **"Top sources given to the AI"**, with the first
+  tagged *best match* and no label on the others. We only know these chunks were
+  given to the model, not which ones the answer used, and up to two more may
+  have been given too, so the label claims no more than that.
 - Citations are **saved on the post when it is created** (§4.3), so a later
   re-sync or profile change doesn't change what an old answer cited.
 
@@ -308,7 +353,7 @@ it does now.
 fake account that appears in the admin user list, can be deleted or given
 course access by mistake, and must be seeded in every environment.
 
-*Rejected (after the Goldfish review):* a `JSON_SCHEMA_VALID` CHECK on
+*Rejected (first Goldfish run):* a `JSON_SCHEMA_VALID` CHECK on
 `citations`. With a single write path already validated by Pydantic, it
 duplicated that model in SQL, needed a migration for every change, and needed a
 test only to catch the two drifting apart.
@@ -347,7 +392,7 @@ other type has `citation_url`) and inserts the post with `author_role='AI'`, `au
 ### 4.4 Labeling
 
 Both thread pages get a third badge case, **"AI-generated"**, with its own
-style, and a "Sources given to the AI" block listing the citations (label as
+style, and a "Top sources given to the AI" block listing the citations (label as
 link text, *best match* on the first). It must work in both themes (T8).
 
 **Finding AI answers to check.** Staff review after posting is the only safety
@@ -368,8 +413,8 @@ Router keeps `location.state` in `history.state`, which survives a reload; that'
 harmless.
 
 If the live backlog is long or a grading run has paused live answering (§5.3,
-§5.4), an answer can arrive after the polling window ends. The banner then just
-polling message just disappears, and the answer appears on the next visit. That's acceptable.
+§5.4), an answer can arrive after the polling window ends. The polling message
+then just disappears, and the answer appears on the next visit. That's acceptable.
 
 The window is never computed from `created_at`. That is a naive MySQL
 `func.now()` (UTC) serialized without an offset, which the browser reads as
@@ -378,8 +423,8 @@ would never start.
 
 While polling it shows: *"If course materials cover this question, an AI answer
 will appear here shortly."* This is true whether or not an answer comes. The
-number of attempts should cover about twice the slowest live answer time
-measured in T5. The
+slowest possible live answer is bounded by `RAG_LIVE_DEADLINE_S` (60 s) plus
+queueing, and 36 attempts (~3 minutes) covers twice that. The
 staff page doesn't poll.
 
 *Rejected:* a `questions.ai_status` column polled until done (a migration, a
@@ -458,8 +503,9 @@ post text the student chose. So staff get **"Retract AI answer"**:
 - Students don't see retracted posts at all. Staff see a collapsed "AI answer
   retracted by {name}" line ("by staff" if that user was deleted) that expands
   to the original text.
-- `post_count` counts only non-retracted posts, so a thread never shows
-  "1 reply" with nothing visible.
+- `post_count` counts only non-retracted posts, for every viewer, so a student
+  never sees "1 reply" with nothing visible. Staff see the collapsed retracted
+  line in the thread, but it isn't counted as a reply.
 - `answer_question` counts retracted AI posts as "already has an AI post", so a
   retracted thread is never answered again.
 - It's a soft hide, not a delete, so the record of what the AI said is kept.
@@ -480,7 +526,7 @@ on 2026-10-17.
 | Service | Image | Data volume | Notes |
 |---|---|---|---|
 | `ollama` | `ollama/ollama` (exact tag pinned at implementation) | `ollama_models` | `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_NUM_PARALLEL=1`. Models are pulled by hand: `docker compose exec ollama ollama pull qwen2.5:1.5b` (and every model in `eval/configs.json`). |
-| `infinity` | `michaelf34/infinity` (pinned) | `infinity_cache` | One service serving every embedding model any profile uses: `all-MiniLM-L6-v2`, `gte-Qwen2-1.5B-instruct`, and optionally `bge-small-en-v1.5`. Verify the gte model ID and any `trust_remote_code` need against its model card, and **check that Infinity applies gte-Qwen2's last-token pooling** from the model's own configuration rather than defaulting to mean pooling (otherwise axis 2 doesn't test what the spec describes). |
+| `infinity` | `michaelf34/infinity` (pinned) | `infinity_cache` | One service serving every embedding model any profile uses: `all-MiniLM-L6-v2`, `gte-Qwen2-1.5B-instruct`, and optionally `bge-small-en-v1.5`. **Each model is loaded at a pinned Hugging Face revision** (Infinity's per-model `--revision`, matching `embedding_revision` in `profiles.py`), so a fresh `infinity_cache` volume, for example on the VM, downloads the same weights the stored vectors were made with. Verify the gte model ID and any `trust_remote_code` need against its model card, and **check that Infinity applies gte-Qwen2's last-token pooling** from the model's own configuration rather than defaulting to mean pooling (otherwise axis 2 doesn't test what the spec describes). |
 | `chromadb` | `chromadb/chroma` (pinned) | `chroma_data` | HTTP server mode. **Pin the Python ChromaDB client to the same version as the server image**; the client/server API has changed between versions, and a mismatch fails at runtime. |
 
 - **Ports:** in prod, none published; the backend reaches the services by name
@@ -554,21 +600,23 @@ RagResult  = (matched, chunks[], answer | None, truncated: bool,
               metrics{embedding_time_ms, retrieval_time_ms, generation_time_ms, cpu_percent})
 
 run(course_id, question_text, config):
-    collection = chroma.get(f"course_{course_id}__{config.ingestion_profile}")
+    profile    = PROFILES.get(config.ingestion_profile)  or → UnknownProfile
+    if config.generation_model not in ollama.list_models()   → ModelNotAvailable   # before anything else
+    question_text = question_text[:QUESTION_MAX_CHARS]          # same text embedded and prompted
+    collection = chroma.get(f"course_{course_id}__{profile.name}")
         if missing → ProfileNotIngested
     model      = collection.metadata.embedding_model          # never from code (§6.2)
-    if collection.metadata.profile_hash != profiles[config.ingestion_profile].hash
+    if collection.metadata.profile_hash != profile.hash()
         → ProfileStale                                       # never query a stale collection
-    current    = index_syncs.current_sync_ids(course_id, config.ingestion_profile)
+    current    = index_syncs.current_sync_ids(course_id, profile.name)
     q_vec      = infinity.embed(profile.query_prefix + question_text, model)   [timed]
     hits       = collection.query(q_vec, n=TOP_K, where={sync_id ∈ current})   [timed]
     log all hits with score and above_threshold flag                            # debugging
     hits       = drop historical_qa hits whose accepted_post_id is no longer accepted (§4.6)
     kept       = [h for h in hits if h.similarity >= config.similarity_threshold]
     if not kept: return RagResult(matched=false, chunks=[], answer=None, metrics)
-    if config.generation_model not in ollama.list_models() → ModelNotAvailable
     messages   = [system: config.system_prompt (literal),
-                  user:   prompt.build(kept, question_text)]
+                  user:   prompt.build(kept, question_text)]   # size-capped, below
     async with generation_gate.acquire(priority=caller):    # one gate for both paths (below)
         answer = ollama.chat(config.generation_model, messages,
                              num_ctx, temperature=0, seed, num_predict,
@@ -576,11 +624,28 @@ run(course_id, question_text, config):
     return RagResult(matched=true, chunks=kept, answer, metrics)
 ```
 
-`run()` first checks `config.ingestion_profile in PROFILES` and raises
-`UnknownProfile` otherwise, before any collection lookup. That way a collection
-left behind by a profile removed from code can't cause a `KeyError` (`500`).
-`ModelNotAvailable` compares tags after normalizing them (`llama3.2` ≡
-`llama3.2:latest`), so a valid model given without a tag isn't refused.
+**Order of checks.** `run()` checks the profile name first (`UnknownProfile`),
+so a collection left behind by a profile removed from code can't cause a
+`KeyError` (`500`). Next it checks the model, **before embedding or the
+threshold**. Otherwise an unpulled model with an off-topic question (q14, say)
+would return `200 matched:false`, which is the silent fallback the spec forbids.
+`list_models` is cached for ~30 s. `ModelNotAvailable` compares tags after
+normalizing them (`llama3.2` ≡ `llama3.2:latest`), so a valid model given
+without a tag isn't refused.
+
+**The prompt always fits in `num_ctx`.** Ollama cuts an oversized prompt from
+the start without an error, which would remove the guardrail. So the size is
+bounded at every input, not only for embeddings:
+- the question (title + body for live) is cut to `QUESTION_MAX_CHARS`
+  (e.g. 4,000), the same text for embedding and prompt;
+- each chunk's text in the prompt is cut to `PROMPT_CHUNK_MAX_CHARS` (e.g. 2,000,
+  ending with "…"). This matters mostly for long historical Q&A pairs, which are
+  never split;
+- `prompt.build` then counts the whole message (system prompt included) with
+  the chunking tokenizer times a 1.3 safety margin, since the generation model
+  tokenizes differently. While it's over `OLLAMA_NUM_CTX − num_predict`, it drops
+  the lowest-ranked chunk. The system prompt and question are never dropped.
+  Dropped chunks are logged and aren't cited.
 
 - Collections are created with cosine distance (`hnsw:space = cosine`), and
   similarity = `1 - distance`, so the threshold is a cosine similarity.
@@ -623,10 +688,17 @@ left behind by a profile removed from code can't cause a `KeyError` (`500`).
     Truncations are logged, and T10 reports how many answers were cut off. The
     **live path never posts a truncated answer** (§5.4).
   - **Measure latency early.** In the T5 infrastructure step, next to the
-    memory measurement (§5.1), time the worst case: a gte-Qwen2 query embedding
-    plus a `qwen2.5:3b` generation with a full context, after a model swap. If
-    that comes close to 150 s, truncated eval answers would lower answer quality
-    in the report, so revisit `num_predict` or the model choice then.
+    memory measurement (§5.1), time two cases:
+    - the worst compare call: a gte-Qwen2 query embedding plus a `qwen2.5:3b`
+      generation with a full context, after a model swap. If that comes close to
+      150 s, truncated eval answers would lower answer quality in the report;
+    - a typical **live** answer: `qwen2.5:1.5b`, ~2k context, `num_predict` 512,
+      including a reload after compare traffic. If many runs exceed
+      `RAG_LIVE_DEADLINE_S` (60 s), most live answers would be truncated and
+      dropped (§5.4).
+
+    Either result means revisiting `num_predict`, the deadline or the model
+    choice then, not after T6.
 
   *Rejected (second Goldfish run):* returning `504` on timeout. It ends the
   grader's re-run exactly like the timeout it was meant to avoid.
@@ -677,8 +749,10 @@ left behind by a profile removed from code can't cause a `KeyError` (`500`).
   phrase ("I don't have enough information", "The provided context does not
   contain", …) **and** is short (e.g. under ~40 words). A useful partial answer
   like "The syllabus does not cover X, but Y…" isn't suppressed. Only the live
-  path uses it (§5.4), so live posting differs from what the eval measures in
-  exactly this one place. T10 reports both how many eval answers it would
+  path uses it (§5.4). Live posting differs from what the eval measures in
+  **two places**: this filter, and the input text (live embeds
+  `title + "\n\n" + body`, while the harness sends one `question` string).
+  The second is inherent, since the harness has no title. T10 reports both how many eval answers it would
   suppress and how many of those were actually useful (false suppressions).
   Tune the phrases from the answers in `eval/report.md`.
 
@@ -729,7 +803,10 @@ re-checks the thread before posting: still open, no AI post, and no accepted or
 staff answer (covers staff closing or answering it during generation); (4) any
 failure, timeout or truncation posts nothing. A *student* answer posted during
 generation doesn't stop the AI answer, since peers' answers aren't
-authoritative.
+authoritative. "Staff answer" means `author_role = 'STAFF'`, which is stored
+from the poster's **effective** role (§0). So a TA answering from the student
+app counts as a student here. Accepted: staff normally answer from the staff
+app, and an accepted answer stops the AI either way.
 
 **Live configuration not available.** If the course hasn't ingested
 `RAG_LIVE_PROFILE` or `RAG_LIVE_MODEL` isn't pulled, live answering would fail
@@ -833,14 +910,14 @@ limit, `OLLAMA_NUM_CTX`, the generation options (`temperature=0`, `seed`,
 ```
 Profile:
     name
-    embedding_model
+    embedding_model, embedding_revision  # Hugging Face commit, pinned (below)
     query_prefix, document_prefix        # e.g. gte-Qwen2 and bge need a query instruction
     fallback_chunker per resource type:
         sliding_window(chunk_size, chunk_overlap)
         | semantic(unit, breakpoint_similarity, max_chunk_size)   # not the retrieval threshold
     hash()                               # ingestion-side settings only: embedding_model,
-                                         # document_prefix, chunkers (not query_prefix,
-                                         # which doesn't affect stored vectors)
+                                         # embedding_revision, document_prefix, chunkers
+                                         # (not query_prefix, which doesn't affect stored vectors)
 
 PROFILES = {
     "sliding-window": MiniLM, one sliding window for every type      # baseline
@@ -852,8 +929,25 @@ PROFILES = {
 
 Starting sizes (provisional, tuned locally before T6, then frozen by the CI
 test below): sliding window `chunk_size` 200 word-pieces, `chunk_overlap` 40.
-In `type-tailored`, markdown and web sections use `semantic(sentence, 0.6, 200)`
-and PDFs keep the 200/40 window.
+In `type-tailored`, each type gets its own fallback, with a reason (the spec
+requires one per choice):
+- **Markdown and web sections:** `semantic(sentence, 0.6, 200)`. Prose sections
+  change topic mid-section, and a fixed window cuts across those changes.
+- **PDFs (slide decks):** **one chunk per page**, since a slide is a
+  self-contained unit; a 200/40 window only when a single page exceeds 200
+  word-pieces. The baseline window instead runs across page boundaries, mixing
+  slides.
+- Historical Q&A pairs are never split in either profile (the spec makes them
+  atomic).
+
+**Axis 1 may still show a small difference.** The spec makes structural
+splitting (by heading, by section, Q&A pairs atomic) part of *both* profiles;
+only the fallback inside oversized sections and long passages differs. If most
+sections are under 200 word-pieces, the two profiles produce nearly the same
+chunks for web pages and markdown. So the T6 setup (§10) counts, per resource
+type, how many chunks differ between the two profiles, and T10 reports it next
+to the axis-1 results. A small difference is then explained, not mistaken for
+"chunking doesn't matter".
 
 Structural splitting is the same in every profile: web pages by heading after
 stripping HTML, markdown by section, historical Q&A pairs never split. Profiles
@@ -1029,7 +1123,9 @@ ingest(course_id, source_key, documents_or_fetch_spec, profiles):
         content_hash = hash(documents)  (commit SHA for repos)
         for profile in profiles:                       # one at a time: limits CPU taken from Ollama
             try:
-                if collection exists and its hash != profile.hash: raise ProfileChanged   # §6.2
+                if collection exists and its hash != profile.hash(): raise ProfileChanged   # §6.2
+                if index_syncs row has this content_hash and no last_error:
+                    UPDATE last_synced_at = now(); continue      # unchanged: skip re-embedding
                 units   = to_thread(split_units, documents, profile)     # sync: structural split → units
                 if profile's fallback is semantic:
                     unit_vecs = await infinity.embed(units, profile.embedding_model)   # async
@@ -1040,6 +1136,7 @@ ingest(course_id, source_key, documents_or_fetch_spec, profiles):
                     await chroma.add(collection, ids, vectors, metadata incl. sync_id)   # not yet visible
                 UPDATE index_syncs SET current_sync_id = sync_id, content_hash, chunk_count,
                        last_synced_at = now(), last_error = NULL ...      # the switch (upsert on first sync)
+                await asyncio.sleep(CLEANUP_GRACE_S)            # e.g. 30 s: let in-flight queries finish
                 await chroma.delete(collection, where={source_key, sync_id ≠ current})   # also removes leftovers
             except error:
                 record last_error/last_error_at for this profile; continue        # others still run
@@ -1065,7 +1162,16 @@ ingest(course_id, source_key, documents_or_fetch_spec, profiles):
 - **Re-sync never shows two versions or a gap.** New chunks are invisible until
   the switch, because every search filters on the current `sync_id`s (§5.3).
   Old chunks are invisible after the switch even before cleanup. A failed sync
-  leaves the old version current.
+  leaves the old version current. A query reads the current `sync_id`s from
+  MySQL and *then* queries ChromaDB. If the switch and the deletion both
+  happened in between, that one query would find no chunks for the source. So
+  cleanup waits `CLEANUP_GRACE_S` (e.g. 30 s) after the switch, far longer than
+  any query takes.
+- **Unchanged content isn't re-embedded.** If the fetched documents hash to the
+  `content_hash` already current for a profile, that profile only updates
+  `last_synced_at`. This saves minutes per `embedding-alt` re-sync on CPU.
+- `chunk_count` is decremented when §4.6's cleanup deletes a historical Q&A
+  thread's chunks, so the staff list stays accurate.
 - **Profiles succeed or fail independently.** A failure in the slow
   `embedding-alt` profile shouldn't block the live profile from getting an
   updated syllabus. The consequence is that profiles of one source can be on
@@ -1106,7 +1212,8 @@ see both versions).
 A Resources page in the staff app: register a URL resource, upload a file or
 zip (with the "Where can people view this?" field), re-sync with a profile
 picker (default: every profile the source is already ingested under; the live
-profile for a new source), re-index Q&A, delete. The
+profile for a new source), "Replace upload" for uploaded resources (§3.2),
+re-index Q&A, delete. The
 list shows each source's per-profile `last_synced_at`, `chunk_count`,
 `last_error` and the version-mismatch flag. After a sync click, the page polls
 every ~5 s until `last_synced_at` or `last_error_at` is later than the click,
@@ -1119,7 +1226,11 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 - Resource endpoints, Q&A re-index and `/rag/compare` use the existing
   `require_course_staff`, scoped by `course_id` in the path. A global `ADMIN`
   counts as `STAFF`, so the `grader` account can run the harness.
-- Every `resource_id` must belong to the path's `course_id`, otherwise `404`.
+- Every id in a path must belong to the ids before it, otherwise `404`: a
+  `resource_id` to the path's `course_id`; for
+  `PATCH …/questions/{question_id}/posts/{post_id}/retract`, the post to the
+  question and the question to the course. Otherwise a staff member of course A
+  could retract a post in course B by editing the URL.
 - Collections are per course, and `run()` only opens the requested course's
   collection, so there is no cross-course retrieval.
 - Students get no resource endpoints; they see citations on AI posts only.
@@ -1178,9 +1289,9 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 | `backend/app/services/rag/__init__.py`, `clients.py`, `profiles.py`, `prompt.py`, `pipeline.py`, `chunking.py`, `fetchers.py`, `ingestion.py` (new) | §5.2 |
 | `backend/app/routers/qa.py` | `create_question` schedules the background task; new staff-only `PATCH …/posts/{post_id}/retract` |
 | `backend/app/routers/rag.py` (new) | compare endpoint, staff-only `GET /courses/{course_id}/rag/health` |
-| `backend/app/routers/resources.py` (new) | resource and re-index endpoints |
+| `backend/app/routers/resources.py` (new) | resource and re-index endpoints, including `PUT …/resources/{resource_id}/upload` (replace an upload, §3.2) |
 | `backend/app/main.py` | include the new routers |
-| `backend/app/config.py` | `RAG_LIVE_*`, `OLLAMA_URL`, `INFINITY_URL`, `CHROMA_URL`, `OLLAMA_NUM_CTX`, `RAG_TOP_K`, `GITLAB_HOST`, `GITLAB_ACCESS_TOKEN`, `RAG_COMPARE_BUDGET_S`, `RAG_LIVE_DEADLINE_S`, `RAG_COMPARE_QUIET_S`, `RAG_LIVE_MAX_WAITING`, `INFINITY_BATCH_SIZE`, `CHUNK_TOKENIZER_PATH` |
+| `backend/app/config.py` | `RAG_LIVE_*`, `OLLAMA_URL`, `INFINITY_URL`, `CHROMA_URL`, `OLLAMA_NUM_CTX`, `RAG_TOP_K`, `GITLAB_HOST`, `GITLAB_ACCESS_TOKEN`, `RAG_COMPARE_BUDGET_S`, `RAG_LIVE_DEADLINE_S`, `RAG_COMPARE_QUIET_S`, `RAG_LIVE_MAX_WAITING`, `INFINITY_BATCH_SIZE`, `CHUNK_TOKENIZER_PATH`, `QUESTION_MAX_CHARS`, `PROMPT_CHUNK_MAX_CHARS`, `CLEANUP_GRACE_S` |
 | `backend/requirements.txt` | ChromaDB HTTP client (same version as the server image), HTML parser, PDF text extraction (per-page), `tokenizers` (chunk-size counting, §6.2), `psutil` (`cpu_percent`) |
 | `backend/Dockerfile` | install `git`; download MiniLM's `tokenizer.json` at build time from a pinned Hugging Face revision to `/opt/tokenizers/minilm/` (outside the `/app` bind mount), so the backend never downloads it at runtime |
 | `backend/app/*/README.md` | describe the new modules |
@@ -1243,8 +1354,11 @@ Two everyday events break it for a while, so each has a checklist step:
   night, any slip-day nights), start the VM early and **wait for `rag/health` to
   be green**.
 - **Every deploy to `production`**: wait for `rag/health` to be green before
-  leaving it. Profile changes can't cause a mismatch, because the CI test in
-  §6.2 blocks them.
+  leaving it. The CI test in §6.2 makes a profile change under the same name
+  fail the pipeline, but someone could update the pinned value in the same MR.
+  So that test is a speed bump, not enforcement: **any MR that changes a
+  pinned value needs the other teammate's approval** (every MR already needs a
+  review), and this post-deploy check remains mandatory.
 
 During grading windows: in the eval course, no accept or un-accept changes
 (§4.6); in **every** course, no re-sync, re-index or upload. The generation gate
@@ -1263,6 +1377,8 @@ still compete with grading for the 4 vCPUs and for Infinity.
   `eval/heldout_offtopic.json`.
 - Run each ingestion profile once at `similarity_threshold: 0` and record the
   **rank and score of the expected chunk** per question (see §12, axis 2).
+- Count, per resource type, how many chunks differ between `sliding-window` and
+  `type-tailored` (§6.2, axis 1).
 - Check the course's `rag/health`, then run the harness.
 
 Live answering stays enabled throughout; it pauses by itself while compare
@@ -1285,6 +1401,10 @@ calls arrive (§5.3).
 - `test_profile_hashes_pinned`: each profile's `definition_hash()` (all fields,
   `query_prefix` included) equals its pinned value.
 - Model tag normalization (`llama3.2` ≡ `llama3.2:latest`).
+- `prompt.build`: a very long question and long Q&A chunks are capped, and
+  lowest-ranked chunks are dropped until the message fits; the system prompt is
+  always kept.
+- Citation dedupe: two chunks of one historical thread produce one citation.
 - Generation gate: a waiting compare call goes before waiting live tasks; live
   is skipped after a recent compare call.
 - URL checks: private, loopback, link-local and metadata addresses refused;
@@ -1322,14 +1442,18 @@ calls arrive (§5.3).
   in `truncated_chunk_count`.
 - Staff accept an AI answer through the existing endpoint.
 - Compare endpoint: exact response shape; creates no rows; unknown profile or
-  unpulled model → `422`; profile not ingested → `404`; stale profile → `409`;
+  unpulled model → `422` **even for a question that matches nothing**; profile not ingested → `404`; stale profile → `409`;
   service down → `503`; non-staff → `403`; a leftover collection for a profile
   removed from code → `422`, not `500`.
 - Re-sync: searches never see two versions; a failed sync keeps the old one; a
   second sync while one runs → `409`; deleting a syncing resource → `409`; one
   failing profile doesn't stop the others; ingestion into a collection with a
   different hash is refused.
-- Access: another course's `resource_id` → `404`.
+- Access: another course's `resource_id` → `404`; retracting with a `post_id`
+  from another question or course → `404`.
+- Replacing an upload keeps the resource's id and `index_syncs` rows, and
+  searches see the old content until the switch; re-syncing unchanged content
+  doesn't re-embed.
 
 **Manual, against our real GitLab** (before writing ingestion code)
 - A markdown citation `…/-/blob/{branch}/{path}?plain=1#L12-L30` opens the
@@ -1375,16 +1499,27 @@ calls arrive (§5.3).
   several workers would need a job queue.
 - **Seeded threads can match other eval questions.** The seeded board threads
   cover Docker, Git and Claude Code, which may overlap with the repo files
-  behind some of q1–q11. If a seeded thread outranks the repo chunk, the harness counts
-  a miss (wrong `source_url`) even if the answer is right; if it ranks below,
-  the hit is counted normally. So historical Q&A can lower measured retrieval
-  but can't inflate it. T10 reports how many q1–q11 had a `historical_qa` chunk
-  in `retrieved_chunks`.
+  behind some of q1–q11. The harness counts a hit if **any** returned chunk
+  matches, whatever its rank, so a seeded thread only causes a miss if it
+  pushes the expected chunk out of the top `TOP_K` (or the prompt-size cut,
+  §5.3). It can't create a hit, since its `source_url` never contains a file
+  path. So historical Q&A can lower measured retrieval but can't inflate it.
+  T10 reports, from the logged top-k, how many q1–q11 misses had the expected
+  chunk pushed out by a `historical_qa` chunk.
 - **No automatic re-sync.** If the syllabus page or a repo changes, AI answers
   cite and quote the old version until staff press re-sync. A decision, not an
   oversight: scheduled re-syncs would compete with live answers for CPU, and
   could break "harness-ready" by changing profiles at unpredictable times
   (§10).
+- **Parsing has no timeout.** PDF and HTML parsing run in `asyncio.to_thread`,
+  and a thread can't be cancelled, so a pathological PDF could keep a CPU core
+  busy until restart. Accepted: uploads and registration are staff-only, and the
+  size caps (§7.2) bound the input. A parse in a killable subprocess would fix
+  it if this ever happens.
+- **Migration downgrade.** `002_rag`'s `downgrade()` reverses the schema, but
+  refuses (raises) if any AI post exists, since `author_user_id` can't go back
+  to NOT NULL with authorless rows. Delete the AI posts by hand first if a
+  downgrade is ever really needed.
 - **Version-dependent details to check against the pinned images:** the
   ChromaDB cosine-distance setting and heartbeat path, and Infinity's
   multi-model and pooling behavior (§5.1).
