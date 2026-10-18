@@ -186,3 +186,49 @@ async def test_health_reports_down_services_without_raising(monkeypatch, clients
     assert report["ollama"] == {"ok": True, "models": ["qwen2.5:1.5b"]}
     assert report["infinity"]["ok"] is False
     assert report["chromadb"] == {"ok": False, "error": "refused"}
+
+
+# ── malformed responses ──────────────────────────────────────────────────────
+
+
+async def test_embed_malformed_json_is_service_unavailable(monkeypatch, clients):
+    _use(monkeypatch, clients, lambda r: httpx.Response(200, content=b"not json"))
+
+    with pytest.raises(clients.ServiceUnavailable) as err:
+        await clients.embed(["a"], "m")
+
+    assert "malformed" in err.value.detail
+
+
+async def test_embed_missing_field_is_service_unavailable(monkeypatch, clients):
+    _use(monkeypatch, clients, lambda r: httpx.Response(200, json={"oops": []}))
+
+    with pytest.raises(clients.ServiceUnavailable):
+        await clients.embed(["a"], "m")
+
+
+async def test_embed_vector_count_mismatch_is_service_unavailable(monkeypatch, clients):
+    one_vector = {"data": [{"index": 0, "embedding": [1.0]}]}
+    _use(monkeypatch, clients, lambda r: httpx.Response(200, json=one_vector))
+
+    with pytest.raises(clients.ServiceUnavailable) as err:
+        await clients.embed(["a", "b"], "m")
+
+    assert "1 vectors for 2 texts" in err.value.detail
+
+
+async def test_list_models_malformed_is_service_unavailable(monkeypatch, clients):
+    _use(monkeypatch, clients, lambda r: httpx.Response(200, json={"tags": []}))
+
+    with pytest.raises(clients.ServiceUnavailable):
+        await clients.has_model("m")
+
+
+async def test_chat_malformed_stream_line_is_service_unavailable(monkeypatch, clients):
+    body = _ndjson({"message": {"content": "ok"}, "done": False}) + b"{broken\n"
+    _use(monkeypatch, clients, lambda r: httpx.Response(200, content=body))
+
+    with pytest.raises(clients.ServiceUnavailable) as err:
+        await clients.chat("m", [], options={}, deadline=time.monotonic() + 5)
+
+    assert "malformed stream line" in err.value.detail
