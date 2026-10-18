@@ -20,6 +20,7 @@ from ..database import Base
 
 if TYPE_CHECKING:
     from .qa import Category, Question
+    from .resource import IndexSync, Resource
     from .user import User
 
 
@@ -42,6 +43,12 @@ class Course(Base):
     )
     questions: Mapped[list[Question]] = relationship(
         "Question", back_populates="course", cascade="all, delete-orphan"
+    )
+    resources: Mapped[list[Resource]] = relationship(
+        "Resource", back_populates="course", cascade="all, delete-orphan"
+    )
+    index_syncs: Mapped[list[IndexSync]] = relationship(
+        "IndexSync", back_populates="course", cascade="all, delete-orphan"
     )
 
 

@@ -37,6 +37,20 @@ frontend-typecheck:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
+# ── Unit tests ────────────────────────────────────────────────────────────────
+
+# No services needed. Includes test_profile_hashes_pinned, which fails the MR
+# if an ingestion profile changes under its own name (docs/design-rag.md §6.2).
+python-unit-tests:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - pip install -r backend/requirements.txt --quiet
+  script:
+    - cd tests/unit && pytest
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
 # ── Security scans ────────────────────────────────────────────────────────────
 
 sast:

@@ -123,15 +123,17 @@ Runs once from the `main.py` lifespan hook:
   `alembic upgrade head` has created the tables, so the backend container
   waits instead of crashing.
 
-`_ensure_grader` is the example to follow if the RAG feature needs a
-dedicated system account to author AI posts. `Post.author_user_id` is
-non-nullable, so an AI post needs some `User` row (see
-[`../schemas/README.md`](../schemas/README.md)).
+AI posts don't need a system account: they have `author_role = 'AI'` and a
+NULL `author_user_id` (see [`../models/README.md`](../models/README.md) and
+`docs/design-rag.md` §4.1).
 
 ## Adding a service
 
-New RAG work (ingestion, retrieval, answer generation) belongs here as new
-modules, for example `ingestion_service.py` and `rag_service.py`. Follow the
+RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
+`docs/design-rag.md` §5.2). So far it has `rag/profiles.py`: the fixed list of
+ingestion profiles (chunking + embedding model). Never change a profile under
+its own name; add a new one. `tests/unit/test_profiles.py` pins each
+profile's hash and fails the pipeline otherwise. Follow the
 same rules: take an `AsyncSession`, flush without committing, raise
 `QnaError` subclasses, and keep HTTP details in the router. Calls to Ollama,
 Infinity or ChromaDB should go through the service layer too, so the router

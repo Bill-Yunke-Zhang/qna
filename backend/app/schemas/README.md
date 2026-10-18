@@ -76,14 +76,12 @@ A future AI-answer feature would most likely add fields to `PostResponse` /
 you do, update the matching serializer in `services/qa_service.py`, because
 these response models are filled from dicts, not ORM objects.
 
-Two constraints matter for an AI-generated post:
-
-- **A new `author_role` value** (for example an AI role) needs an Alembic
-  migration of the `post_author_role` ENUM. The frontends' `author_role` type
-  must change too. See [`../../../frontend/student/README.md`](../../../frontend/student/README.md).
-- **Every post needs an author user.** `Post.author_user_id` is non-nullable
-  and a foreign key to `users.id`, and `AuthorSummary` requires `id` and
-  `display_name`. An AI post therefore needs either a dedicated system account
-  (`services/bootstrap.py` shows how the app already creates its `grader`
-  account at startup) or a schema change that makes the author nullable. That
-  is a design decision for `docs/design-rag.md`.
+AI-generated posts (`docs/design-rag.md` §4.1–4.2): migration `002_rag`
+added `AI` to `post_author_role` and made `Post.author_user_id` nullable for
+AI posts only. **The schemas don't handle them yet.** `PostResponse.author`
+still requires an `AuthorSummary`, and `qa_service.serialize_post` still calls
+`author_summary(post.author)`, so a thread containing an AI post would fail to
+serialize. No code creates AI posts yet. Before any does, `author` becomes
+`AuthorSummary | None`, `PostResponse` gains `citations`, and the frontends'
+`author_role` and `author` types change to match (see
+[`../../../frontend/student/README.md`](../../../frontend/student/README.md)).
