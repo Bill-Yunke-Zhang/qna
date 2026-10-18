@@ -1,6 +1,6 @@
 # Design: Retrieval-Augmented AI Answers (RAG)
 
-Status: **revised after the Goldfish test** (2026-10-17). Nothing here is implemented yet.
+Status: **revised after four Goldfish reviews** (2026-10-17). Nothing here is implemented yet.
 
 This document covers T3–T6 of Project 3: ingesting course resources, answering
 new questions with a grounded, cited AI post, and the configurable pipeline
@@ -9,6 +9,7 @@ decision, how it works, and the alternatives we rejected. The decisions were
 made in Elephant sessions `b49b7f7e` and `5df5a1ed` (see `ai_log/`).
 
 Contents:
+0. Reading guide and glossary
 1. Problem and scope
 2. Overview
 3. Citation data model
@@ -21,6 +22,80 @@ Contents:
 10. Implementation order
 11. Testing
 12. Risks and open questions
+
+---
+
+## 0. Reading guide and glossary
+
+**Source documents.** "The spec" is `instructions.md` (Project 3's assignment).
+The deployment guide is `deployment_instructions.md`. Both are in the repo root.
+
+**Task numbers** (from the spec):
+
+| Task | What it is |
+|---|---|
+| T3 | This design doc, written with the Elephant/Goldfish process (below) |
+| T4 | Resource ingestion: syllabus, schedule, GitLab repos, historical Q&A; upload fallback; re-sync; ingestion profiles |
+| T5 | Live AI answering in threads, plus the Compose services it needs |
+| T6 | The configuration comparison: the compare endpoint, run by the harness |
+| T7 | Integration tests |
+| T8 | Light and dark themes |
+| T9 | Production deployment to the GCP VM |
+| T10 | Each member's written report (`docs/<netid>.md`) |
+
+**The five comparison axes** (T6). Each comparison changes exactly one axis
+away from a fixed baseline:
+1. chunking (ingestion profile `sliding-window` vs. `type-tailored`);
+2. embedding model (`sliding-window` + MiniLM vs. `embedding-alt` = gte-Qwen2);
+3. similarity threshold;
+4. system prompt ("prompt hardening": at least two alternatives to the baseline guardrail);
+5. generation model (e.g. `qwen2.5:1.5b` vs. `qwen2.5:3b`).
+
+**The harness.** `eval/compare_harness.py` is provided by the course and must
+not be modified. It reads `eval/ground_truth.json` (14 questions, `q1`–`q14`:
+q1–q11 answerable from the syllabus, schedule or repo files; q12–q13 answerable
+from seeded board threads; q14, "What's the best pizza topping?", must not
+match) and our `eval/configs.json` (copied from `eval/configs.example.json`: a
+baseline plus one entry per comparison). For each question × configuration it
+calls the compare endpoint once (`run_one`). It counts a **retrieval hit** when
+any returned chunk's `source_url` contains the question's `expected_source`.
+`expected_source_section` names the expected section, for checking by hand.
+Grading re-runs it against our deployed VM, and any HTTP error or timeout
+aborts the whole run without writing a report.
+
+**The compare contract** (fixed by the spec):
+
+```
+POST /api/courses/{course_id}/rag/compare           staff/admin only; creates no rows
+request:  { question, ingestion_profile, similarity_threshold, system_prompt, generation_model }
+response: { matched: bool,
+            retrieved_chunks: [ { resource_type, source_url, similarity_score, text } ],
+            answer: string | null,              # null when matched is false
+            metrics: { embedding_time_ms, retrieval_time_ms, generation_time_ms, cpu_percent } }
+```
+
+An unpulled `generation_model` must return a 4xx (no silent fallback).
+
+**Process terms.** The *Elephant* is the long design session that produced this
+doc. A *Goldfish* is a fresh session with no memory of it, given the doc to
+critique. Notes marked *"Rejected (Goldfish run N)"* record a choice that review
+round overturned, and why.
+
+**Existing code this design touches** (all present today):
+- `require_course_member` / `require_course_staff` (`common/dependencies.py`):
+  course access checks. A global `ADMIN` counts as `STAFF`. A request with
+  header `X-App-Surface: student` gets the *effective* role `STUDENT` whatever
+  the user's real role, which is how staff use the student app.
+- `limiter` (`common/rate_limit.py`): the existing slowapi rate limiter, used
+  only by the auth routes.
+- `set_post_accepted` and `create_post` (`services/qa_service.py`): accept or
+  un-accept an answer; create a post (refused in closed threads).
+- `author_summary`: the serializer's helper that renders a post's author.
+- The student app's thread route is `/student/questions/{question_id}`. The
+  course comes from app context, not the URL. The staff app's equivalent is
+  `/staff/questions/{question_id}`.
+- MySQL stores timestamps in UTC without an offset; users' browsers are in US
+  Central time (Wisconsin). This matters in §4.5.
 
 ---
 
@@ -104,8 +179,15 @@ Type-specific location metadata and how `citation_url` is built:
 | Syllabus / schedule (web page) | `heading_path`, `fragment_start`, `fragment_end`, optional `fragment_prefix` | `{page}#:~:text={prefix}-,{start},{end}` (prefix part only when set) |
 | Repo markdown | `file_path`, `line_start`, `line_end`, `heading_path`, `commit_sha` | `{base}/{path}?plain=1#L{start}-L{end}` |
 | Repo PDF | `file_path`, `page_start`, `page_end`, `commit_sha` | `{raw_base}/{path}#page={page_start}` |
+| Historical Q&A | `question_id`, `accepted_post_id` | none stored; each frontend builds the link to its own thread page (§0) from `question_id` when it renders the citation |
 
-`source_url` stays `{base}/{path}` for both, so the harness's
+**`{base}`** is where a resource's files are viewed:
+- a registered repo: `{gitlab_project_url}/-/blob/{repo_branch}`;
+- an upload: the staff-supplied `link_base_url` (§3.2);
+- a web page: the page URL itself (written `{page}` above).
+
+`source_url` for repo files is `{base}/{path}`, for both markdown and PDF, so
+the harness's
 `expected_source in source_url` check is unaffected; only `citation_url`
 changes.
 - **Markdown:** GitLab shows `.md` files rendered, and `#L…` line anchors only
@@ -117,7 +199,6 @@ changes.
 
 Both behaviors are to be **checked against our real GitLab** (§11) before
 ingestion code is written.
-| Historical Q&A | `question_id`, `accepted_post_id` | none stored; each frontend builds the link to its own thread page from `question_id` when it renders the citation |
 
 **Text Fragments.** `fragment_start` and `fragment_end` are the first and last
 ~5 words of the chunk's text as it appears after HTML stripping. If a chunk has
@@ -131,7 +212,8 @@ earlier on the page, set `fragment_prefix` to the end of the preceding heading
 text, so the fragment only matches inside the right section.
 
 For historical Q&A, `source_url` (for the compare response) is the relative path
-`/questions/{id}`. Neither URL bakes in `FRONTEND_URL`, so links survive a URL
+`/questions/{id}`, relative to either app's base (`/student` or `/staff`, §0).
+The harness can't score it either way (§12). Neither URL bakes in `FRONTEND_URL`, so links survive a URL
 change and chunks are portable between environments.
 
 ### 3.2 Where links point
@@ -204,9 +286,13 @@ skips or invents tags; worth retrying with a stronger model); labels like
   author rule below depends on the FK having none.
 - AI posts are always `kind = ANSWER`, so the existing `set_post_accepted`
   accepts them with **no new code path** and no pre-approval.
-- New columns `retracted_at DATETIME NULL` and `retracted_by_user_id NULL → users`,
-  with `CHECK (author_role = 'AI' OR retracted_at IS NULL)`: only AI posts can be
-  retracted (§4.4).
+- New columns `retracted_at DATETIME NULL` and
+  `retracted_by_user_id NULL → users ON DELETE SET NULL`, with
+  `CHECK (author_role = 'AI' OR retracted_at IS NULL)`: only AI posts can be
+  retracted (§4.7). `retracted_by_user_id` has **no** CHECK pairing it with
+  `retracted_at`, because MySQL rejects a CHECK on a column whose FK has a
+  referential action. With `SET NULL`, deleting a staff user who retracted a
+  post still works, and the post shows "retracted by staff".
 
 All `CHECK` constraints are written by hand in the migration (Alembic
 autogenerate doesn't detect them).
@@ -244,8 +330,10 @@ move to a table then.
 | Both `QuestionDetailPage.tsx` | `post.author.display_name` crashes on null; render "AI-generated" instead |
 | Both `lib/types.ts` | `author_role: 'STUDENT' \| 'STAFF' \| 'AI'`, `author: AuthorSummary \| null`, `citations` |
 
-Unaffected: `selectinload(Post.author)`, `post_count`, `has_accepted_answer`,
-`set_post_accepted`, `questions.author_user_id`, existing tests, `seed_demo.py`.
+Unaffected by the null author: `selectinload(Post.author)`,
+`has_accepted_answer`, `questions.author_user_id`, existing tests,
+`seed_demo.py`. Changed for other reasons: `post_count` (excludes retracted
+posts, §4.7) and `set_post_accepted` (historical Q&A cleanup, §4.6).
 
 ### 4.3 Creating an AI post
 
@@ -267,22 +355,7 @@ net, and "N replies" makes an AI-answered thread look attended. So
 `QuestionSummary` gains `has_ai_answer: bool` (computed like
 `has_accepted_answer`, ignoring retracted posts), and the staff question list
 shows an "AI answered" badge and a filter for AI-answered threads with no
-accepted answer.
-
-**Retracting a wrong AI answer.** The board has no way to delete, edit or hide a
-post. Without one, a wrong AI answer stays visible to the class under an
-official-looking badge, and since the question body is controlled by the
-student, an injected question could make the AI post text the student chose.
-So staff get **"Retract AI answer"**:
-- `PATCH /courses/{course_id}/questions/{question_id}/posts/{post_id}/retract`,
-  `require_course_staff`, only for `author_role = 'AI'` (otherwise `422`). It
-  sets `retracted_at` and `retracted_by_user_id`, and un-accepts the post if it
-  was accepted.
-- Students don't see retracted posts at all. Staff see a collapsed "AI answer
-  retracted by {name}" line that expands to the original text.
-- `answer_question` counts retracted AI posts as "already has an AI post", so a
-  retracted thread is never answered again.
-- A soft hide, not a delete, so the record of what the AI said is kept.
+accepted answer. Removing a wrong answer is covered in §4.7.
 
 ### 4.5 Showing the answer without a refresh
 
@@ -296,7 +369,7 @@ harmless.
 
 If the live backlog is long or a grading run has paused live answering (§5.3,
 §5.4), an answer can arrive after the polling window ends. The banner then just
-disappears, and the answer appears on the next visit. That's acceptable.
+polling message just disappears, and the answer appears on the next visit. That's acceptable.
 
 The window is never computed from `created_at`. That is a naive MySQL
 `func.now()` (UTC) serialized without an offset, which the browser reads as
@@ -325,11 +398,22 @@ it's not indexed. New accepted answers reach the index only through the manual
 "Re-index Q&A threads" action (§7.5), not automatically.
 
 **When staff un-accept an answer** (or accept a different one, or retract an
-accepted AI answer), `set_post_accepted` removes that thread's `historical_qa`
-chunks from **every** profile's collection (by `question_id`), right away. So
-the AI stops citing an answer staff rejected. Deleting is the same in every
-profile, so it causes no version mismatch (§7.3). The thread comes back, with
-its new accepted answer, on the next re-index of all profiles.
+accepted AI answer), the AI must stop citing it right away. Two parts:
+- **The check at query time is what guarantees it.** For every `historical_qa`
+  hit, `run()` checks in MySQL (one read query for all hits) that the chunk's
+  `accepted_post_id` is still the thread's accepted, non-retracted answer. Hits
+  that fail are dropped before the threshold. This doesn't depend on ChromaDB
+  being reachable during the un-accept, or on the order relative to a re-index
+  that's running at the same moment and re-inserts the old thread.
+- **Deleting the chunks is only cleanup.** After the DB commit,
+  `set_post_accepted` deletes that thread's `historical_qa` chunks from every
+  profile's collection, by `question_id`. If ChromaDB is down this is logged and
+  skipped, and the accept still succeeds; the next re-index removes them. The
+  delete is the same in every profile, so it causes no version mismatch (§7.3).
+
+The thread comes back, with its new accepted answer, on the next re-index of all
+profiles. There is **no automatic re-index or re-sync** of any source; staff
+press re-sync when the syllabus or a repo changes (§12).
 
 In the eval course, nobody changes accepted answers or re-indexes during grading
 windows (§10).
@@ -338,6 +422,17 @@ A thread becomes a historical Q&A chunk only if its accepted answer was written
 by a person (`author_role != 'AI'`). So AI text never re-enters the index, and
 future answers cite the original course material instead of an earlier AI
 thread. If staff later accept a human answer, the next re-index includes it.
+
+**Which threads are eligible.** QnA has no private or anonymous posts today, so
+every indexed thread was already visible to the whole course. If either is
+added later, those threads must be excluded from historical Q&A, or their
+content could appear in answers to other students.
+
+**Lasting injection.** Historical chunks contain student-written question text,
+which then reaches future prompts. Tag escaping (§5.5) only protects the prompt
+structure. The safeguard is that a thread is indexed only once staff accepted a
+human answer in it, so a member of staff has read it. Staff should retract,
+rather than accept in, a thread whose question is clearly an injection attempt.
 
 *Rejected:* indexing accepted AI answers (future answers would cite a thread
 instead of the source, and accepted mistakes would spread); indexing only the
@@ -348,6 +443,30 @@ benefit: an AI answer is only posted when the question already matched the
 source, so it only helps rewordings close to the old question but far from the
 source). The second option is noted as future work if the eval shows rewordings
 are often missed.
+
+### 4.7 Retracting a wrong AI answer
+
+The board has no way to delete, edit or hide a post. Without one, a wrong AI
+answer stays visible to the class under an official-looking badge. And since
+the student controls the question body, an injected question could make the AI
+post text the student chose. So staff get **"Retract AI answer"**:
+- `PATCH /courses/{course_id}/questions/{question_id}/posts/{post_id}/retract`,
+  `require_course_staff`, only for `author_role = 'AI'` (otherwise `422`). It
+  sets `retracted_at` and `retracted_by_user_id`, and un-accepts the post if it
+  was accepted. Retracting a post that's already retracted returns `200` and
+  changes nothing.
+- Students don't see retracted posts at all. Staff see a collapsed "AI answer
+  retracted by {name}" line ("by staff" if that user was deleted) that expands
+  to the original text.
+- `post_count` counts only non-retracted posts, so a thread never shows
+  "1 reply" with nothing visible.
+- `answer_question` counts retracted AI posts as "already has an AI post", so a
+  retracted thread is never answered again.
+- It's a soft hide, not a delete, so the record of what the AI said is kept.
+
+*Not designed (future work):* letting students flag an AI answer for staff
+review. The student who asked is the most likely person to notice a wrong
+answer. The staff filter for unreviewed AI answers (§4.4) covers this for now.
 
 ---
 
@@ -431,7 +550,7 @@ satisfies the compare endpoint's "must not create any Question or Post row".
 
 ```
 RagConfig  = (ingestion_profile, similarity_threshold, system_prompt, generation_model)
-RagResult  = (matched, chunks[], answer | None,
+RagResult  = (matched, chunks[], answer | None, truncated: bool,
               metrics{embedding_time_ms, retrieval_time_ms, generation_time_ms, cpu_percent})
 
 run(course_id, question_text, config):
@@ -444,6 +563,7 @@ run(course_id, question_text, config):
     q_vec      = infinity.embed(profile.query_prefix + question_text, model)   [timed]
     hits       = collection.query(q_vec, n=TOP_K, where={sync_id ∈ current})   [timed]
     log all hits with score and above_threshold flag                            # debugging
+    hits       = drop historical_qa hits whose accepted_post_id is no longer accepted (§4.6)
     kept       = [h for h in hits if h.similarity >= config.similarity_threshold]
     if not kept: return RagResult(matched=false, chunks=[], answer=None, metrics)
     if config.generation_model not in ollama.list_models() → ModelNotAvailable
@@ -464,7 +584,9 @@ left behind by a profile removed from code can't cause a `KeyError` (`500`).
 
 - Collections are created with cosine distance (`hnsw:space = cosine`), and
   similarity = `1 - distance`, so the threshold is a cosine similarity.
-- `TOP_K` is a fixed setting, not one of the compared axes.
+- `TOP_K = 5` (provisional), a fixed setting, not one of the compared axes. With
+  chunks of at most ~200 word-pieces (§6.2), the context is about 5 × 260
+  tokens plus the prompt, roughly 2k tokens, well inside `OLLAMA_NUM_CTX` (§5.5).
 - **Generation is deterministic and bounded.** `temperature=0` and a fixed
   `seed`, so a grader's rerun of the harness reproduces our committed report as
   closely as Ollama allows. `num_predict` (e.g. 512) caps runaway repetition,
@@ -477,22 +599,34 @@ left behind by a profile removed from code can't cause a `KeyError` (`500`).
   - **One generation gate for both paths.** Ollama runs one request at a time
     (`OLLAMA_NUM_PARALLEL=1`), so a compare call would otherwise wait behind
     whatever live answer is generating, plus a model swap. Every `ollama.chat`
-    goes through one process-wide `generation_gate`. Compare waiters always go
-    before live waiters, and only one live generation can be in progress, so a
-    compare call waits for at most one live answer.
+    goes through one process-wide `generation_gate`, which lets one generation
+    run at a time. When it frees up, a waiting compare call always gets it
+    before any waiting live task. A generation already in progress isn't
+    interrupted, so a compare call waits for at most the one live generation
+    that holds the gate.
   - **Live answers pause during compare traffic.** The live path doesn't
-    generate at all if a compare call arrived in the last `RAG_COMPARE_QUIET_S`
-    (e.g. 300 s). It posts nothing, and the question waits for a person. During
-    a grading run the harness sends compare calls back to back, so live answering
-    pauses by itself; nobody has to turn it off. Live generations also get a
-    shorter deadline, `RAG_LIVE_DEADLINE_S` (e.g. 60 s), which bounds the one
-    live answer a compare call may wait behind.
+    generate at all while a compare call is in progress or one finished within
+    the last `RAG_COMPARE_QUIET_S` (e.g. 60 s). It posts nothing, and the
+    question waits for a person. During a grading run the harness sends compare
+    calls back to back, so live answering pauses by itself; nobody has to turn
+    it off. Live generations also get a shorter deadline, `RAG_LIVE_DEADLINE_S`
+    (e.g. 60 s), which bounds the one live answer a compare call may wait
+    behind. **Visible effect:** a question asked during or within a minute of a
+    harness run gets no AI answer. The T5/T10 write-up says so, so a grader who
+    tests T5 right after the harness isn't surprised.
   - **The deadline is a total budget from request arrival.** `budget_end =
     arrival + RAG_COMPARE_BUDGET_S` (e.g. 150 s). It covers embedding,
     retrieval, waiting at the gate, loading the model and streaming. Generation
     streams, and when the budget runs out the stream is closed and the endpoint
-    returns `200` with whatever text exists (possibly empty). Truncations are
-    logged, and T10 reports how many answers were cut off.
+    returns `200` with whatever text exists (possibly empty), with
+    `truncated = true` internally (the contract has no field for it).
+    Truncations are logged, and T10 reports how many answers were cut off. The
+    **live path never posts a truncated answer** (§5.4).
+  - **Measure latency early.** In the T5 infrastructure step, next to the
+    memory measurement (§5.1), time the worst case: a gte-Qwen2 query embedding
+    plus a `qwen2.5:3b` generation with a full context, after a model swap. If
+    that comes close to 150 s, truncated eval answers would lower answer quality
+    in the report, so revisit `num_predict` or the model choice then.
 
   *Rejected (second Goldfish run):* returning `504` on timeout. It ends the
   grader's re-run exactly like the timeout it was meant to avoid.
@@ -571,7 +705,7 @@ answer_question(course_id, question_id):
     if live_waiting >= RAG_LIVE_MAX_WAITING: log; return   # backlog cap: a person answers
     live_waiting += 1                                  # before the first await
     try:
-        if compare_seen_within(RAG_COMPARE_QUIET_S): log; return   # grading/eval traffic (§5.3)
+        if compare_active_or_ended_within(RAG_COMPARE_QUIET_S): log; return   # grading/eval traffic (§5.3)
         result = run(course_id, title + "\n\n" + body, live_config_from_settings(),
                      caller=LIVE, budget=RAG_LIVE_DEADLINE_S)
     except any error from Infinity / ChromaDB / Ollama / missing profile or model:
@@ -579,18 +713,30 @@ answer_question(course_id, question_id):
     finally:
         live_waiting -= 1
     if not result.matched: return
+    if result.truncated: log; return                   # never post a cut-off answer
     if is_refusal(result.answer): log; return
     with a new DB session:                             # the request's session is closed
         question = load(question_id)
         if question is None: return                    # deleted during generation
         if question.status != OPEN or question has an AI post (retracted included): return
+        if question has an accepted answer or any STAFF answer: return   # a person got there first
         create_ai_post(question, result.answer, citations_from(result.chunks)[:3])
 ```
 
 Safeguards: (1) the question commits first, so RAG problems never stop a
 question from being posted; (2) the task opens its own DB session; (3) it
-re-checks that the thread is still open and has no AI post (covers staff closing
-it during generation); (4) any failure or timeout posts nothing.
+re-checks the thread before posting: still open, no AI post, and no accepted or
+staff answer (covers staff closing or answering it during generation); (4) any
+failure, timeout or truncation posts nothing. A *student* answer posted during
+generation doesn't stop the AI answer, since peers' answers aren't
+authoritative.
+
+**Live configuration not available.** If the course hasn't ingested
+`RAG_LIVE_PROFILE` or `RAG_LIVE_MODEL` isn't pulled, live answering would fail
+quietly on every question. So it logs a warning **once per course per hour**,
+not per question. The course's `rag/health` (§5.1) reports the live
+configuration as well as the eval profiles, and the staff Resources page shows
+a banner: "AI answers are off for this course: {reason}".
 
 **Load limits.** Ollama runs one request at a time (`OLLAMA_NUM_PARALLEL=1`)
 with one model loaded (`OLLAMA_MAX_LOADED_MODELS=1`), so a burst of questions
@@ -624,10 +770,7 @@ generation, and slower models risk nginx's 300 s timeout); a Redis job queue
 with a worker container (durable, but a lost task only means a person answers,
 so not worth another service using RAM next to Ollama); posting refusals (they
 add noise, and the question list's "N replies" makes the thread look attended).
-
-The compare endpoint returns refusals as they are; only live posting suppresses
-them. Document this difference in T10 and report how many eval answers
-`is_refusal` would have suppressed.
+The compare endpoint returns refusals as they are (§5.3).
 
 ### 5.5 Prompt format
 
@@ -694,7 +837,7 @@ Profile:
     query_prefix, document_prefix        # e.g. gte-Qwen2 and bge need a query instruction
     fallback_chunker per resource type:
         sliding_window(chunk_size, chunk_overlap)
-        | semantic(unit, similarity_threshold, max_chunk_size)
+        | semantic(unit, breakpoint_similarity, max_chunk_size)   # not the retrieval threshold
     hash()                               # ingestion-side settings only: embedding_model,
                                          # document_prefix, chunkers (not query_prefix,
                                          # which doesn't affect stored vectors)
@@ -706,6 +849,11 @@ PROFILES = {
     optional "embedding-cls": bge-small-en-v1.5 (CLS pooling), sliding window
 }
 ```
+
+Starting sizes (provisional, tuned locally before T6, then frozen by the CI
+test below): sliding window `chunk_size` 200 word-pieces, `chunk_overlap` 40.
+In `type-tailored`, markdown and web sections use `semantic(sentence, 0.6, 200)`
+and PDFs keep the 200/40 window.
 
 Structural splitting is the same in every profile: web pages by heading after
 stripping HTML, markdown by section, historical Q&A pairs never split. Profiles
@@ -744,9 +892,12 @@ passages (PDFs always use it).
 The staff UI only picks profiles; it can't create or edit them.
 
 **Changing a profile means giving it a new name, and CI enforces it.** A unit
-test, `test_profile_hashes_pinned`, lists each profile's expected `hash()`. Any
-change to a profile's ingestion settings under the same name fails the merge
-request's pipeline. Whoever made the change then adds a new profile name and
+test, `test_profile_hashes_pinned`, lists each profile's expected
+`definition_hash()`, which covers **every** field, `query_prefix` included.
+(`hash()`, stored on collections, covers only ingestion-side settings, because
+`query_prefix` doesn't change stored vectors. It still changes retrieval
+results, so T6 numbers mustn't shift under an unchanged name.) Any change to a
+profile under the same name fails the merge request's pipeline. Whoever made the change then adds a new profile name and
 ingests it into a new collection. This turns a problem that would otherwise show
 up on the VM, as `409`s during a grading run, into a red pipeline before merge.
 Adding a profile adds a line to the test.
@@ -909,8 +1060,8 @@ ingest(course_id, source_key, documents_or_fetch_spec, profiles):
   *Rejected (second Goldfish run):* a Redis lock (`SET … NX EX`). It needed a Lua
   compare-and-delete, TTL refreshes per batch and an accepted `allkeys-lru`
   eviction risk, to support several processes. The rest of the design already
-  requires one process (`BackgroundTasks`, the live semaphore, in-memory
-  uploads; §5.4).
+  requires one process (`BackgroundTasks`, the in-process `generation_gate`,
+  in-memory uploads; §5.4).
 - **Re-sync never shows two versions or a gap.** New chunks are invisible until
   the switch, because every search filters on the current `sync_id`s (§5.3).
   Old chunks are invisible after the switch even before cleanup. A failed sync
@@ -1018,11 +1169,10 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 | `backend/app/models/resource.py` (new) | `Resource`, `IndexSync` |
 | `backend/app/models/__init__.py` | export new models |
 | `backend/app/migrations/versions/002_rag.py` (new) | enum, nullable column, `citations`, retraction columns, the three CHECKs (author, citations, retraction), `resources`, `index_syncs` |
-| `backend/app/schemas/qa.py` | `PostResponse.author` nullable, `Citation`, `citations` |
+| `backend/app/schemas/qa.py` | `PostResponse.author` nullable, `Citation`, `citations`; `QuestionSummary.has_ai_answer` |
 | `backend/app/schemas/rag.py` (new) | compare request/response (exact contract) |
 | `backend/app/schemas/resource.py` (new) | resource create/upload/list, sync status |
 | `backend/app/services/qa_service.py` | `serialize_post` null author and citations; retracted posts hidden for students and collapsed for staff; `has_ai_answer` (ignoring retracted) on question summaries; `retract_ai_post`; `set_post_accepted` drops the thread's `historical_qa` chunks on un-accept (§4.6) |
-| `backend/app/schemas/qa.py` `QuestionSummary` | `has_ai_answer` |
 | `backend/app/services/ai_answer_service.py` (new) | `answer_question`, `create_ai_post` |
 | `backend/app/services/resource_service.py` (new) | resource CRUD, sync status |
 | `backend/app/services/rag/__init__.py`, `clients.py`, `profiles.py`, `prompt.py`, `pipeline.py`, `chunking.py`, `fetchers.py`, `ingestion.py` (new) | §5.2 |
@@ -1030,10 +1180,9 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 | `backend/app/routers/rag.py` (new) | compare endpoint, staff-only `GET /courses/{course_id}/rag/health` |
 | `backend/app/routers/resources.py` (new) | resource and re-index endpoints |
 | `backend/app/main.py` | include the new routers |
-| `backend/app/config.py` | `RAG_LIVE_*`, `OLLAMA_URL`, `INFINITY_URL`, `CHROMA_URL`, `OLLAMA_NUM_CTX`, `RAG_TOP_K`, `GITLAB_HOST`, `GITLAB_ACCESS_TOKEN` |
+| `backend/app/config.py` | `RAG_LIVE_*`, `OLLAMA_URL`, `INFINITY_URL`, `CHROMA_URL`, `OLLAMA_NUM_CTX`, `RAG_TOP_K`, `GITLAB_HOST`, `GITLAB_ACCESS_TOKEN`, `RAG_COMPARE_BUDGET_S`, `RAG_LIVE_DEADLINE_S`, `RAG_COMPARE_QUIET_S`, `RAG_LIVE_MAX_WAITING`, `INFINITY_BATCH_SIZE`, `CHUNK_TOKENIZER_PATH` |
 | `backend/requirements.txt` | ChromaDB HTTP client (same version as the server image), HTML parser, PDF text extraction (per-page), `tokenizers` (chunk-size counting, §6.2), `psutil` (`cpu_percent`) |
 | `backend/Dockerfile` | install `git`; download MiniLM's `tokenizer.json` at build time from a pinned Hugging Face revision to `/opt/tokenizers/minilm/` (outside the `/app` bind mount), so the backend never downloads it at runtime |
-| `backend/app/config.py` (also) | `RAG_COMPARE_BUDGET_S`, `RAG_LIVE_DEADLINE_S`, `RAG_COMPARE_QUIET_S`, `RAG_LIVE_MAX_WAITING`, `INFINITY_BATCH_SIZE`, `CHUNK_TOKENIZER_PATH` |
 | `backend/app/*/README.md` | describe the new modules |
 
 **Frontend**
@@ -1097,8 +1246,10 @@ Two everyday events break it for a while, so each has a checklist step:
   leaving it. Profile changes can't cause a mismatch, because the CI test in
   §6.2 blocks them.
 
-During grading windows, in the eval course: no accept or un-accept changes and
-no re-index (§4.6).
+During grading windows: in the eval course, no accept or un-accept changes
+(§4.6); in **every** course, no re-sync, re-index or upload. The generation gate
+only protects Ollama, so an ingestion (especially under `embedding-alt`) would
+still compete with grading for the 4 vCPUs and for Infinity.
 
 **One-time T6 setup** (on the VM):
 - Run `scripts/seed_demo.py`. It creates new courses and prints their ids; put
@@ -1131,7 +1282,8 @@ calls arrive (§5.3).
 - Chunkers: markdown sections keep correct line ranges; PDF pages tracked;
   Q&A pairs never split; a window that splits an oversized markdown section gets
   its own exact line range; window boundaries never fall mid-word.
-- `test_profile_hashes_pinned`: each profile's `hash()` equals its pinned value.
+- `test_profile_hashes_pinned`: each profile's `definition_hash()` (all fields,
+  `query_prefix` included) equals its pinned value.
 - Model tag normalization (`llama3.2` ≡ `llama3.2:latest`).
 - Generation gate: a waiting compare call goes before waiting live tasks; live
   is skipped after a recent compare call.
@@ -1146,11 +1298,16 @@ calls arrive (§5.3).
 - Deleting a user who has posts still fails as before.
 - After the migration, an ordinary student post (and staff post) is created
   normally, i.e. `citations` is stored as SQL `NULL`, not JSON `null`.
-- Retraction: staff can retract an AI post (and it's un-accepted); retracting a
-  human post → `422`; students → `403`; students don't see the retracted post;
-  `answer_question` doesn't answer the thread again.
-- Un-accepting an answer removes that thread's `historical_qa` chunks from every
-  profile's collection.
+- Retraction: staff can retract an AI post (and it's un-accepted); retracting
+  again → `200`, no change; retracting a human post → `422`; students → `403`;
+  students don't see the retracted post and `post_count` excludes it;
+  `answer_question` doesn't answer the thread again; deleting the staff user who
+  retracted it still works.
+- Un-accepting an answer: `run()` stops returning that thread's chunk right away,
+  even with the ChromaDB delete mocked to fail, and even if a re-index re-inserts
+  it; the delete then cleans it up.
+- Live answering skips a truncated answer, and skips a thread that got an
+  accepted or staff answer during generation; a student answer doesn't stop it.
 - Live answering: a match posts one AI answer with ≤3 citations, for a question
   asked from either app (student and staff surface); no match, a refusal, a
   closed or deleted thread, a stale profile, a full backlog or a service error
@@ -1216,6 +1373,18 @@ calls arrive (§5.3).
   doesn't reach them.
 - **Single backend process** assumed by `BackgroundTasks` (§5.4). Moving to
   several workers would need a job queue.
+- **Seeded threads can match other eval questions.** The seeded board threads
+  cover Docker, Git and Claude Code, which may overlap with the repo files
+  behind some of q1–q11. If a seeded thread outranks the repo chunk, the harness counts
+  a miss (wrong `source_url`) even if the answer is right; if it ranks below,
+  the hit is counted normally. So historical Q&A can lower measured retrieval
+  but can't inflate it. T10 reports how many q1–q11 had a `historical_qa` chunk
+  in `retrieved_chunks`.
+- **No automatic re-sync.** If the syllabus page or a repo changes, AI answers
+  cite and quote the old version until staff press re-sync. A decision, not an
+  oversight: scheduled re-syncs would compete with live answers for CPU, and
+  could break "harness-ready" by changing profiles at unpredictable times
+  (§10).
 - **Version-dependent details to check against the pinned images:** the
   ChromaDB cosine-distance setting and heartbeat path, and Infinity's
   multi-model and pooling behavior (§5.1).
