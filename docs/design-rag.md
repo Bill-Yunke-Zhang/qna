@@ -1,6 +1,6 @@
 # Design: Retrieval-Augmented AI Answers (RAG)
 
-Status: **draft for the Goldfish test** (2026-10-16). Nothing here is implemented yet.
+Status: **draft for the Goldfish test** (2026-10-17). Nothing here is implemented yet.
 
 This document covers T3–T6 of Project 3: ingesting course resources, answering
 new questions with a grounded, cited AI post, and the configurable pipeline
@@ -87,6 +87,12 @@ Every chunk stored in ChromaDB carries:
 | `label` | Human-readable: `"{resource title} › {heading path}"`, shown under the citation. |
 | `resource_id`, `resource_type`, `sync_id` | Ownership and versioning (§7). |
 
+`resource_type` is always one of `syllabus`, `schedule`, `repo_markdown`,
+`repo_pdf`, `historical_qa`, the vocabulary of `eval/ground_truth.json`. The
+same values are used in chunk metadata, the compare response and saved
+citations. (A `REPO` resource produces both `repo_markdown` and `repo_pdf`
+chunks.)
+
 Type-specific location metadata and how `citation_url` is built:
 
 | Type | Extra metadata | `citation_url` |
@@ -120,9 +126,17 @@ both, including `,`, `-` and `&`, which have meaning in the fragment syntax.
   endpoint with access checks, path-traversal protection, cleanup, and the risk
   of serving uploaded HTML from our own origin), none of which the requirements
   need.
-- **Eval data** is uploaded as a zip of `eval/sample_data/` taken from the repo
-  root, with the repo's GitLab blob URL as the base, so `source_url` contains
-  `eval/sample_data/...` as the harness expects.
+- **Eval data** is uploaded as three resources so each part is chunked as its
+  real type (this matters for the `type-tailored` profile):
+  - `eval/sample_data/web/syllabus.html` as a single-file `SYLLABUS` upload and
+    `eval/sample_data/web/schedule.html` as a single-file `SCHEDULE` upload, each
+    with `link_base_url` set to that file's GitLab blob URL;
+  - a zip of `eval/sample_data/repo/` as a `REPO` upload, with the blob URL of
+    `eval/sample_data/repo` as the base (zip the folder's contents, so paths
+    inside the zip don't repeat `repo/`).
+
+  Every `source_url` then contains the `eval/sample_data/...` path the harness
+  expects.
 
 ### 3.3 Citations shown on an AI post
 
@@ -154,7 +168,7 @@ skips or invents tags; worth retrying with a stronger model); labels like
   `CHECK (citations IS NULL OR JSON_SCHEMA_VALID(<schema>, citations))`.
   The schema requires an array of 1–3 objects, each with `rank` (1–3),
   `citation_url` (non-empty string), `label` (non-empty string),
-  `resource_type` (one of our types) and `similarity_score` (0–1).
+  `resource_type` (one of the values in §3.1) and `similarity_score` (0–1).
   MySQL enforces `CHECK` from 8.0.16 and `JSON_SCHEMA_VALID` from 8.0.17;
   Compose runs `mysql:8.0`.
 - AI posts are always `kind = ANSWER`, so the existing `set_post_accepted`
@@ -302,7 +316,8 @@ satisfies the compare endpoint's "must not create any Question or Post row".
 
 ```
 RagConfig  = (ingestion_profile, similarity_threshold, system_prompt, generation_model)
-RagResult  = (matched, chunks[], answer | None, metrics{embedding_ms, retrieval_ms, generation_ms, cpu_percent})
+RagResult  = (matched, chunks[], answer | None,
+              metrics{embedding_time_ms, retrieval_time_ms, generation_time_ms, cpu_percent})
 
 run(course_id, question_text, config):
     collection = chroma.get(f"course_{course_id}__{config.ingestion_profile}")
@@ -326,6 +341,9 @@ run(course_id, question_text, config):
 - Collections are created with cosine distance (`hnsw:space = cosine`), and
   similarity = `1 - distance`, so the threshold is a cosine similarity.
 - `TOP_K` is a fixed setting, not one of the compared axes.
+- Metric names are the response contract's names everywhere, internally too,
+  so `schemas/rag.py` needs no mapping. The harness reads them with
+  `.get(name, 0)`, so a misspelled name would show up as 0, not as an error.
 - `retrieved_chunks` in the compare response = `kept` (only chunks that passed
   the threshold, i.e. what went into the prompt). The harness counts a hit if
   any returned chunk matches and ignores the score, so returning all top-k would
@@ -484,14 +502,25 @@ slow part is re-embedding either way).
 ```
 RAG_LIVE_ENABLED        = true
 RAG_LIVE_PROFILE        = "sliding-window"      # defaults = the eval baseline
-RAG_LIVE_THRESHOLD      = <baseline threshold>
+RAG_LIVE_THRESHOLD      = 0.5                   # provisional, see below
 RAG_LIVE_MODEL          = "qwen2.5:1.5b"
 RAG_LIVE_SYSTEM_PROMPT  = <baseline guardrail text>
 ```
 
 Environment variables override the defaults. To try a candidate on the VM, set
 it in `.env` and run `docker compose up -d backend` (a few seconds; in-flight
-answer tasks are lost, which §5.4 accepts). Once T6 picks a winner, **change the
+answer tasks are lost, which §5.4 accepts).
+
+**Picking the baseline threshold.** `0.5` is a placeholder. MiniLM cosine
+scores for relevant pairs often fall below the `0.65` in
+`configs.example.json`, which could leave most questions unmatched. Before T6,
+run the compare endpoint on the `sliding-window` profile with
+`similarity_threshold: 0` and record the score of the expected chunk for each
+of the 13 answerable questions and the top score for q14 (no match). Choose a
+baseline that keeps most answerable questions above it and q14 below it, and
+use that value in both `eval/configs.json` and the code default. Since q14 is
+the only no-match question, also try a few off-topic questions by hand so the
+threshold isn't fitted to a single example. Once T6 picks a winner, **change the
 code defaults in a merge request linked to `eval/report.md`** and remove the
 override, so the repo matches what's deployed. If a course hasn't ingested the
 live profile, live answering logs it and posts nothing.
@@ -722,6 +751,17 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 5. `prompt.py`, `pipeline.py`, compare endpoint; check it against `eval/compare_harness.py` (T5/T6).
 6. `ai_answer_service.py`, the background task in `create_question`, citations block and polling (T5).
 7. Tests (§11), then deployment of the new services (T9), then the eval runs (T6).
+
+**T6 checklist** (on the VM, before running the harness):
+- Run `scripts/seed_demo.py` so the seeded threads are in the course that
+  `eval/configs.json`'s `course_id` points to.
+- Upload the eval data as in §3.2 and ingest it under every profile in
+  `eval/configs.json`.
+- Re-index Q&A threads under every eval profile (otherwise q12 and q13 can't
+  match).
+- Check that the resource list shows no version-mismatch flag (§7.3).
+- Pull every `generation_model` in `eval/configs.json` into Ollama.
+- Set the baseline threshold as in §6.3.
 
 ---
 
