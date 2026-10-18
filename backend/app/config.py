@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # staff can sign in to your deployment without you sharing a password.
     GRADER_PASSWORD_HASH: str = ""
 
+    # RAG services (docs/design-rag.md §5.1). Defaults are the Compose
+    # service names on qna_network.
+    OLLAMA_URL: str = "http://ollama:11434"
+    INFINITY_URL: str = "http://infinity:7997"
+    CHROMA_URL: str = "http://chromadb:8000"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]
