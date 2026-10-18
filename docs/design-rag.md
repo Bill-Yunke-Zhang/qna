@@ -455,6 +455,16 @@ accepted AI answer), the AI must stop citing it right away. Two parts:
   profile's collection, by `question_id`. If ChromaDB is down this is logged and
   skipped, and the accept still succeeds; the next re-index removes them. The
   delete is the same in every profile, so it causes no version mismatch (§7.3).
+- **Clearing `content_hash` makes the thread come back.** In the same DB
+  commit as the accept change, `set_post_accepted` sets `content_hash = NULL`
+  on the course's `historical_qa` rows in `index_syncs`, for every profile.
+  Without this, un-accepting and then re-accepting the same answer, with no
+  re-index in between, would leave the Q&A documents hashing to the stored
+  value. The next re-index would skip re-embedding (§7.3), and the deleted
+  chunks would never return. It is done in the DB commit rather than after the
+  ChromaDB delete, so it also holds when ChromaDB is down or the delete fails
+  partway. A `NULL` hash only means the next re-index re-embeds Q&A once.
+  *(Found in Bill's review of the final draft.)*
 
 The thread comes back, with its new accepted answer, on the next re-index of all
 profiles. There is **no automatic re-index or re-sync** of any source; staff
@@ -1170,6 +1180,9 @@ ingest(course_id, source_key, documents_or_fetch_spec, profiles):
 - **Unchanged content isn't re-embedded.** If the fetched documents hash to the
   `content_hash` already current for a profile, that profile only updates
   `last_synced_at`. This saves minutes per `embedding-alt` re-sync on CPU.
+  The skip is only safe while the stored chunks still match the stored hash, so
+  anything that deletes chunks outside this task must also clear
+  `content_hash`. Today that is only §4.6's un-accept cleanup.
 - `chunk_count` is decremented when §4.6's cleanup deletes a historical Q&A
   thread's chunks, so the staff list stays accurate.
 - **Profiles succeed or fail independently.** A failure in the slow
@@ -1283,7 +1296,7 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
 | `backend/app/schemas/qa.py` | `PostResponse.author` nullable, `Citation`, `citations`; `QuestionSummary.has_ai_answer` |
 | `backend/app/schemas/rag.py` (new) | compare request/response (exact contract) |
 | `backend/app/schemas/resource.py` (new) | resource create/upload/list, sync status |
-| `backend/app/services/qa_service.py` | `serialize_post` null author and citations; retracted posts hidden for students and collapsed for staff; `has_ai_answer` (ignoring retracted) on question summaries; `retract_ai_post`; `set_post_accepted` drops the thread's `historical_qa` chunks on un-accept (§4.6) |
+| `backend/app/services/qa_service.py` | `serialize_post` null author and citations; retracted posts hidden for students and collapsed for staff; `has_ai_answer` (ignoring retracted) on question summaries; `retract_ai_post`; `set_post_accepted` drops the thread's `historical_qa` chunks and clears the course's Q&A `content_hash` on un-accept (§4.6) |
 | `backend/app/services/ai_answer_service.py` (new) | `answer_question`, `create_ai_post` |
 | `backend/app/services/resource_service.py` (new) | resource CRUD, sync status |
 | `backend/app/services/rag/__init__.py`, `clients.py`, `profiles.py`, `prompt.py`, `pipeline.py`, `chunking.py`, `fetchers.py`, `ingestion.py` (new) | §5.2 |
@@ -1426,6 +1439,9 @@ calls arrive (§5.3).
 - Un-accepting an answer: `run()` stops returning that thread's chunk right away,
   even with the ChromaDB delete mocked to fail, and even if a re-index re-inserts
   it; the delete then cleans it up.
+- Un-accept then re-accept the same answer with no re-index in between: every
+  profile's `historical_qa` `content_hash` is `NULL` after the un-accept, and
+  the next re-index re-embeds the thread so `run()` returns it again.
 - Live answering skips a truncated answer, and skips a thread that got an
   accepted or staff answer during generation; a student answer doesn't stop it.
 - Live answering: a match posts one AI answer with ≤3 citations, for a question
