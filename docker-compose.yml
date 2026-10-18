@@ -69,8 +69,83 @@ services:
       retries: 5
     command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy allkeys-lru
 
+  # --- RAG services (docs/design-rag.md §5.1) ---
+  # The backend deliberately does not depend_on these: they are optional for
+  # the board, and a slow model download must not keep the API down.
+  # Ports are published on 127.0.0.1 only, for debugging from the laptop.
+
+  ollama:
+    image: ollama/ollama:0.35.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "-1"
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  infinity:
+    # Only published for amd64; runs emulated on Apple Silicon.
+    image: michaelf34/infinity:0.0.77-cpu
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7997:7997"
+    environment:
+      # Semicolon-separated, one revision per model (pinned Hugging Face
+      # commits, so a fresh cache downloads the weights the stored vectors
+      # were made with). Override in .env to add the T6 models.
+      INFINITY_MODEL_ID: ${INFINITY_MODEL_ID:-sentence-transformers/all-MiniLM-L6-v2}
+      INFINITY_REVISION: ${INFINITY_REVISION:-1110a243fdf4706b3f48f1d95db1a4f5529b4d41}
+      INFINITY_BATCH_SIZE: ${INFINITY_BATCH_SIZE:-16}
+      # The cpu image defaults to the ONNX (optimum) engine, which ignores a
+      # model's own sentence-transformers pooling config. The torch engine
+      # applies it, which gte-Qwen2's last-token pooling needs (axis 2).
+      INFINITY_ENGINE: ${INFINITY_ENGINE:-torch}
+      INFINITY_PORT: "7997"
+    command: ["v2"]
+    volumes:
+      - infinity_cache:/app/.cache
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7997/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+
+  chromadb:
+    image: chromadb/chroma:1.5.9
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - chroma_data:/data
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8000 && printf \"GET /api/v2/heartbeat HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
 volumes:
   mysql_data:
+  ollama_models:
+  infinity_cache:
+  chroma_data:
 
 networks:
   qna_network:
