@@ -70,8 +70,21 @@ async def embed(texts: list[str], model: str) -> list[list[float]]:
                 resp.raise_for_status()
             except httpx.HTTPError as exc:
                 raise ServiceUnavailable("infinity", _describe(exc)) from exc
-            data = sorted(resp.json()["data"], key=lambda d: d["index"])
-            vectors.extend(d["embedding"] for d in data)
+            try:
+                data = sorted(resp.json()["data"], key=lambda d: d["index"])
+                batch_vectors = [d["embedding"] for d in data]
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ServiceUnavailable(
+                    "infinity", f"malformed response: {_describe(exc)}"
+                ) from exc
+            # A short or long answer would silently shift every later vector
+            # onto the wrong text.
+            if len(batch_vectors) != len(batch):
+                raise ServiceUnavailable(
+                    "infinity",
+                    f"returned {len(batch_vectors)} vectors for {len(batch)} texts",
+                )
+            vectors.extend(batch_vectors)
     return vectors
 
 
@@ -95,7 +108,14 @@ async def list_models() -> frozenset[str]:
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise ServiceUnavailable("ollama", _describe(exc)) from exc
-    models = frozenset(normalize_model_tag(m["name"]) for m in resp.json()["models"])
+    try:
+        models = frozenset(
+            normalize_model_tag(m["name"]) for m in resp.json()["models"]
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ServiceUnavailable(
+            "ollama", f"malformed response: {_describe(exc)}"
+        ) from exc
     _models_cache = (now, models)
     return models
 
@@ -145,7 +165,12 @@ async def chat(
                     async for line in resp.aiter_lines():
                         if not line:
                             continue
-                        chunk = json.loads(line)
+                        try:
+                            chunk = json.loads(line)
+                        except ValueError as exc:
+                            raise ServiceUnavailable(
+                                "ollama", f"malformed stream line: {line[:100]!r}"
+                            ) from exc
                         if "error" in chunk:
                             raise ServiceUnavailable("ollama", str(chunk["error"]))
                         parts.append(chunk.get("message", {}).get("content", ""))
