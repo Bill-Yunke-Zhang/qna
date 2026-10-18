@@ -1,0 +1,256 @@
+"""
+Thin async clients for the three RAG services (docs/design-rag.md §5.1, §5.2).
+
+This is the only module that talks to Ollama, Infinity or ChromaDB, and the
+place to mock them in tests. Every call has a timeout, and any failure to
+reach a service is raised as `ServiceUnavailable`, so callers treat "service
+down" the same way everywhere: the live path posts nothing, ingestion records
+`last_error`, and the compare endpoint returns 503.
+
+Nothing here blocks the event loop: Infinity and Ollama go through
+`httpx.AsyncClient`, and ChromaDB through its own `AsyncHttpClient`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+import structlog
+
+from ...config import settings
+
+logger = structlog.get_logger()
+
+# Tests swap this for an httpx.MockTransport.
+_transport: httpx.AsyncBaseTransport | None = None
+
+_MODELS_CACHE_S = 30.0
+_models_cache: tuple[float, frozenset[str]] | None = None
+
+_chroma_client: Any = None
+_chroma_lock = asyncio.Lock()
+
+
+class ServiceUnavailable(Exception):
+    """A RAG service couldn't be reached or answered with an error."""
+
+    def __init__(self, service: str, detail: str):
+        self.service = service
+        self.detail = detail
+        super().__init__(f"{service} unavailable: {detail}")
+
+
+def _client(base_url: str, timeout: float) -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=_transport)
+
+
+# ── Infinity (embeddings) ────────────────────────────────────────────────────
+
+
+async def embed(texts: list[str], model: str) -> list[list[float]]:
+    """
+    Embed `texts` with `model`, in batches of `INFINITY_BATCH_SIZE` so a large
+    ingestion can't grow Infinity's memory without limit. Returns one vector
+    per text, in order.
+    """
+    vectors: list[list[float]] = []
+    batch_size = settings.INFINITY_BATCH_SIZE
+    async with _client(settings.INFINITY_URL, settings.RAG_SERVICE_TIMEOUT_S) as c:
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start : start + batch_size]
+            try:
+                resp = await c.post(
+                    "/embeddings", json={"model": model, "input": batch}
+                )
+                resp.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise ServiceUnavailable("infinity", _describe(exc)) from exc
+            data = sorted(resp.json()["data"], key=lambda d: d["index"])
+            vectors.extend(d["embedding"] for d in data)
+    return vectors
+
+
+# ── Ollama (generation) ──────────────────────────────────────────────────────
+
+
+def normalize_model_tag(tag: str) -> str:
+    """`llama3.2` and `llama3.2:latest` name the same model."""
+    return tag if ":" in tag else f"{tag}:latest"
+
+
+async def list_models() -> frozenset[str]:
+    """Pulled Ollama models (normalized tags), cached for ~30 s."""
+    global _models_cache
+    now = time.monotonic()
+    if _models_cache and now - _models_cache[0] < _MODELS_CACHE_S:
+        return _models_cache[1]
+    async with _client(settings.OLLAMA_URL, settings.RAG_SERVICE_TIMEOUT_S) as c:
+        try:
+            resp = await c.get("/api/tags")
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ServiceUnavailable("ollama", _describe(exc)) from exc
+    models = frozenset(normalize_model_tag(m["name"]) for m in resp.json()["models"])
+    _models_cache = (now, models)
+    return models
+
+
+async def has_model(tag: str) -> bool:
+    return normalize_model_tag(tag) in await list_models()
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    text: str
+    # True when the deadline cut generation short. The live path never posts
+    # a truncated answer; compare returns it as is (§5.3).
+    truncated: bool
+
+
+async def chat(
+    model: str,
+    messages: list[dict[str, str]],
+    *,
+    options: dict[str, Any],
+    deadline: float,
+) -> ChatResult:
+    """
+    Stream a chat completion until it finishes or `deadline` (a
+    `time.monotonic()` value) passes. The deadline is a total budget: it also
+    covers waiting for Ollama to load the model and start answering. On
+    timeout, returns the text received so far (possibly empty) with
+    `truncated=True` instead of raising.
+    """
+    parts: list[str] = []
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return ChatResult("", truncated=True)
+    body = {"model": model, "messages": messages, "stream": True, "options": options}
+    # The overall budget is enforced by asyncio.timeout below; httpx's own
+    # read timeout only has to be longer than it.
+    async with _client(settings.OLLAMA_URL, remaining + 5) as c:
+        try:
+            async with asyncio.timeout(remaining):
+                async with c.stream("POST", "/api/chat", json=body) as resp:
+                    if resp.status_code >= 400:
+                        await resp.aread()
+                        raise ServiceUnavailable(
+                            "ollama", f"HTTP {resp.status_code}: {resp.text[:200]}"
+                        )
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        chunk = json.loads(line)
+                        if "error" in chunk:
+                            raise ServiceUnavailable("ollama", str(chunk["error"]))
+                        parts.append(chunk.get("message", {}).get("content", ""))
+                        if chunk.get("done"):
+                            return ChatResult("".join(parts), truncated=False)
+        except TimeoutError:
+            logger.warning(
+                "ollama_generation_truncated", model=model, chars=sum(map(len, parts))
+            )
+            return ChatResult("".join(parts), truncated=True)
+        except httpx.HTTPError as exc:
+            raise ServiceUnavailable("ollama", _describe(exc)) from exc
+    # The stream ended without a `done` chunk.
+    raise ServiceUnavailable("ollama", "stream ended before the answer was done")
+
+
+# ── ChromaDB (vector store) ──────────────────────────────────────────────────
+
+
+async def chroma() -> Any:
+    """The shared ChromaDB `AsyncHttpClient`, created on first use."""
+    global _chroma_client
+    if _chroma_client is not None:
+        return _chroma_client
+    async with _chroma_lock:
+        if _chroma_client is None:
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+
+            url = httpx.URL(settings.CHROMA_URL)
+            try:
+                _chroma_client = await chromadb.AsyncHttpClient(
+                    host=url.host,
+                    port=url.port or 8000,
+                    settings=ChromaSettings(anonymized_telemetry=False),
+                )
+            except Exception as exc:  # the client raises plain exceptions
+                raise ServiceUnavailable("chromadb", _describe(exc)) from exc
+    return _chroma_client
+
+
+async def get_collection(name: str) -> Any | None:
+    """The collection named `name`, or None if it doesn't exist."""
+    client = await chroma()
+    try:
+        return await client.get_collection(name)
+    except Exception as exc:
+        if _is_not_found(exc):
+            return None
+        raise ServiceUnavailable("chromadb", _describe(exc)) from exc
+
+
+def _is_not_found(exc: Exception) -> bool:
+    name = type(exc).__name__
+    return name in ("NotFoundError", "InvalidCollectionException") or (
+        isinstance(exc, ValueError) and "does not exist" in str(exc)
+    )
+
+
+# ── Health ───────────────────────────────────────────────────────────────────
+
+
+async def health() -> dict[str, dict[str, Any]]:
+    """
+    Reachability of each service, for the staff `rag/health` endpoint and the
+    T5 checks. Never raises: an unreachable service is reported, not thrown.
+    """
+
+    async def check_ollama() -> dict[str, Any]:
+        global _models_cache
+        _models_cache = None  # report the live state, not the cache
+        return {"ok": True, "models": sorted(await list_models())}
+
+    async def check_infinity() -> dict[str, Any]:
+        async with _client(settings.INFINITY_URL, 5) as c:
+            resp = await c.get("/models")
+            resp.raise_for_status()
+        return {"ok": True, "models": sorted(m["id"] for m in resp.json()["data"])}
+
+    async def check_chroma() -> dict[str, Any]:
+        client = await chroma()
+        await client.heartbeat()
+        return {"ok": True}
+
+    checks = {
+        "ollama": check_ollama(),
+        "infinity": check_infinity(),
+        "chromadb": check_chroma(),
+    }
+    results = await asyncio.gather(*checks.values(), return_exceptions=True)
+    report: dict[str, dict[str, Any]] = {}
+    for name, result in zip(checks, results):
+        if isinstance(result, BaseException):
+            detail = (
+                result.detail
+                if isinstance(result, ServiceUnavailable)
+                else _describe(result)
+            )
+            report[name] = {"ok": False, "error": detail}
+        else:
+            report[name] = result
+    return report
+
+
+def _describe(exc: BaseException) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return f"{type(exc).__name__}: {exc}"[:300]
