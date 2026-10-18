@@ -1,0 +1,75 @@
+{
+  "description": "Held-out questions that should NOT match, for checking the baseline similarity threshold (docs/design-rag.md section 6.3). Written on 2026-10-18, before any RAG code or similarity scores existed, and not used to choose the threshold: ground_truth.json has only one negative (q14), so these show whether the chosen threshold generalizes beyond it. Each question was checked by hand against everything the eval course indexes (eval/sample_data/ and the AI-Assisted Software Development threads in scripts/seed_demo.py, not the General Chemistry I threads, which belong to another course); why_no_match records what that check found. Same shape as ground_truth.json, with resource_type no_match.",
+  "questions": [
+    {
+      "id": "h01",
+      "question": "How do I renew my campus parking permit?",
+      "resource_type": "no_match",
+      "category": "off_topic",
+      "why_no_match": "Campus logistics; 'parking' and 'permit' appear nowhere in sample_data or the seeded threads."
+    },
+    {
+      "id": "h02",
+      "question": "What time does the campus library close on weekends?",
+      "resource_type": "no_match",
+      "category": "off_topic",
+      "why_no_match": "Campus logistics; 'library' appears nowhere in sample_data or the seeded threads."
+    },
+    {
+      "id": "h03",
+      "question": "When is the CS 540 midterm?",
+      "resource_type": "no_match",
+      "category": "other_course",
+      "why_no_match": "Different course. schedule.html and syllabus.html list this course's Midterm 1 and Midterm 2 dates, so 'midterm' will pull those chunks; answering with them would be wrong."
+    },
+    {
+      "id": "h04",
+      "question": "What's the late policy for Math 340 homework?",
+      "resource_type": "no_match",
+      "category": "other_course",
+      "why_no_match": "Different course. syllabus.html has a 'Late Policy - Slip Days' section for this course's projects, which shares the wording but doesn't answer it."
+    },
+    {
+      "id": "h05",
+      "question": "How long is Midterm 1, and what time does it start?",
+      "resource_type": "no_match",
+      "category": "near_miss",
+      "why_no_match": "schedule.html and syllabus.html give Midterm 1's date (Wednesday, October 14), 'Evening', its content and weight, but no start time or length; only the Final Exam has times (5:05-7:05 PM)."
+    },
+    {
+      "id": "h06",
+      "question": "How much overlap should the sliding-window chunker in the Lecture 10 tokenizer lab use?",
+      "resource_type": "no_match",
+      "category": "near_miss",
+      "why_no_match": "The Lecture 10 slides describe the tokenizer-lab activity (implement a word-level sliding-window chunk_text()) but give no window size, step or overlap; 'overlap' appears nowhere in sample_data or the seeded threads."
+    },
+    {
+      "id": "h07",
+      "question": "What does Kubernetes add on top of Docker Compose?",
+      "resource_type": "no_match",
+      "category": "near_miss",
+      "why_no_match": "Uses the course's Docker vocabulary, but 'Kubernetes'/'k8s' appear nowhere; sample_data only describes Compose itself."
+    },
+    {
+      "id": "h08",
+      "question": "How do I resolve a merge conflict in package-lock.json?",
+      "resource_type": "no_match",
+      "category": "near_miss",
+      "why_no_match": "Git/MR vocabulary is everywhere in the P1/P2 instructions and seeded threads, but 'merge conflict' and 'package-lock' appear nowhere."
+    },
+    {
+      "id": "h09",
+      "question": "What machine type should I choose for my Google Cloud VM?",
+      "resource_type": "no_match",
+      "category": "near_miss",
+      "why_no_match": "schedule.html and syllabus.html cover deploying to AWS EC2 only; 'GCP', 'Google Cloud', 'VM' and 'machine type' appear nowhere."
+    },
+    {
+      "id": "h10",
+      "question": "What's the difference between BERT and GPT?",
+      "resource_type": "no_match",
+      "category": "near_miss",
+      "why_no_match": "The Lecture 10 slides cover tokens, attention and next-token prediction, but name no model architectures; 'BERT' and 'encoder' appear nowhere."
+    }
+  ]
+}
