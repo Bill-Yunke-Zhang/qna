@@ -53,12 +53,19 @@ class Semantic:
     """
     Split into units, then merge neighbours while consecutive units' embedding
     similarity stays at or above `breakpoint_similarity` (not the retrieval
-    threshold), up to `max_chunk_size` word-pieces.
+    threshold). A merged span over `max_chunk_size` word-pieces isn't cut at
+    the cap: the `oversized` sliding window, with its own overlap, is run
+    over just that span (the spec's rule for semantic chunking).
     """
 
     unit: Literal["sentence", "paragraph"]
     breakpoint_similarity: float
     max_chunk_size: int
+    oversized: SlidingWindow
+
+    def __post_init__(self) -> None:
+        if self.oversized.chunk_size > self.max_chunk_size:
+            raise ValueError("oversized window must fit within max_chunk_size")
 
 
 @dataclass(frozen=True)
@@ -161,6 +168,12 @@ _GTE_QWEN2_QUERY_PREFIX = (
 # Provisional starting size (§6.2): tuned locally before T6, then frozen.
 # MiniLM truncates at 256 word-pieces; 200 leaves room for a document prefix.
 _BASELINE_WINDOW = SlidingWindow(chunk_size=200, chunk_overlap=40)
+_SEMANTIC_PROSE = Semantic(
+    unit="sentence",
+    breakpoint_similarity=0.2,
+    max_chunk_size=200,
+    oversized=_BASELINE_WINDOW,
+)
 
 _PROFILE_LIST = (
     # Baseline: one sliding window for every type.
@@ -181,10 +194,15 @@ _PROFILE_LIST = (
         document_prefix="",
         chunkers={
             # Prose sections change topic mid-section; a fixed window cuts
-            # across those changes.
-            "syllabus": Semantic("sentence", 0.6, 200),
-            "schedule": Semantic("sentence", 0.6, 200),
-            "repo_markdown": Semantic("sentence", 0.6, 200),
+            # across those changes. Breakpoint 0.2: MiniLM similarity of
+            # adjacent sentences in the eval pages and repo markdown has a
+            # median of 0.22-0.40, so 0.6 split nearly every sentence (median
+            # chunk 21-26 word-pieces); 0.2 splits only at the clearest topic
+            # changes (median 43-56). A span over the cap is windowed with
+            # the baseline window, as the spec requires.
+            "syllabus": _SEMANTIC_PROSE,
+            "schedule": _SEMANTIC_PROSE,
+            "repo_markdown": _SEMANTIC_PROSE,
             # A slide is a self-contained unit; the baseline window runs across
             # page boundaries and mixes slides.
             "repo_pdf": PerPage(oversized=_BASELINE_WINDOW),
