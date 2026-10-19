@@ -130,10 +130,24 @@ NULL `author_user_id` (see [`../models/README.md`](../models/README.md) and
 ## Adding a service
 
 RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
-`docs/design-rag.md` §5.2). So far it has `rag/profiles.py`: the fixed list of
-ingestion profiles (chunking + embedding model). Never change a profile under
-its own name; add a new one. `tests/unit/test_profiles.py` pins each
-profile's hash and fails the pipeline otherwise. Follow the
+`docs/design-rag.md` §5.2). So far it has:
+
+- `rag/profiles.py`: the fixed list of ingestion profiles (chunking +
+  embedding model). Never change a profile under its own name; add a new one.
+  `tests/unit/test_profiles.py` pins each profile's hash and fails the
+  pipeline otherwise.
+- `rag/clients.py`: the only code that talks to Ollama, Infinity and ChromaDB.
+- `rag/fetchers.py`: fetches web pages (only public `http(s)` addresses,
+  checked again on every redirect) and strips them to text with heading
+  positions (`parse_html`).
+- `rag/chunking.py`: splits a document into sections by structure (web pages
+  by heading), runs the profile's fallback chunker on oversized sections, and
+  builds Text Fragment citations. Chunking is three steps (`plan_chunks`,
+  embed `units_to_embed` if any, `finish_chunks`) so semantic chunking never
+  calls Infinity from a worker thread. Markdown and PDF only need to produce
+  `Section`s to reuse the same chunkers.
+
+Follow the
 same rules: take an `AsyncSession`, flush without committing, raise
 `QnaError` subclasses, and keep HTTP details in the router. Calls to Ollama,
 Infinity or ChromaDB should go through the service layer too, so the router

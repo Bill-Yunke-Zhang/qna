@@ -44,8 +44,15 @@ frontend-typecheck:
 python-unit-tests:
   stage: test
   image: python:3.12-slim
+  variables:
+    # Same pinned file as backend/Dockerfile, so the chunk-size tests run
+    # against MiniLM's real tokenizer instead of being skipped.
+    CHUNK_TOKENIZER_PATH: /tmp/minilm/tokenizer.json
   before_script:
     - pip install -r backend/requirements.txt --quiet
+    - mkdir -p /tmp/minilm
+    - python -c "import urllib.request; urllib.request.urlretrieve('https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json', '/tmp/minilm/tokenizer.json')"
+    - echo "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037  /tmp/minilm/tokenizer.json" | sha256sum -c -
   script:
     - cd tests/unit && pytest
   rules:

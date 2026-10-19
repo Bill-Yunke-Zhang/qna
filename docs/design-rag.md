@@ -1207,7 +1207,13 @@ see both versions).
   `script`, `style`, `header`, `nav` and `footer` (the real syllabus has a
   navbar and a copyright footer that would otherwise become chunks that match
   questions), split by headings, record `heading_path`, build Text
-  Fragments from the stripped text (§3.1).
+  Fragments from the stripped text (§3.1). Two more rules came from the
+  sample pages: when a page has a `<main>` element, only its contents are
+  kept (the rest, like the "Skip to main content" link, goes with the
+  navbar); and elements hidden with `display:none` or `hidden` are dropped
+  (the pages' "Loading…" and alert boxes). Each Text Fragment term is taken
+  from a single line of the stripped text, since a term must match inside
+  one block of the live page.
 - **Repos:** shallow clone into a temporary directory, deleted after parsing.
   **Symlinks are skipped**, and every file's resolved path must stay inside the
   clone directory. Otherwise a `.md` symlinked to `/app/.env` or

@@ -1,0 +1,204 @@
+"""
+Unit tests for web fetching and HTML stripping (docs/design-rag.md §7.4, §8).
+
+No network: DNS goes through a fake resolver and HTTP through an
+httpx.MockTransport.
+"""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+
+from app.services.rag import fetchers
+from app.services.rag.fetchers import (
+    FetchError,
+    UnsafeURL,
+    check_url,
+    fetch_web_page,
+    parse_html,
+)
+
+PUBLIC_IP = "93.184.215.14"
+DNS = {
+    "cs.example.edu": [PUBLIC_IP],
+    "internal.example.edu": ["10.0.0.7"],
+    "metadata.example.edu": ["169.254.169.254"],
+    "mixed.example.edu": [PUBLIC_IP, "127.0.0.1"],
+    "mapped.example.edu": ["::ffff:127.0.0.1"],
+}
+
+
+@pytest.fixture(autouse=True)
+def fake_dns(monkeypatch):
+    async def resolve(host: str, port: int) -> list[str]:
+        if host in DNS:
+            return DNS[host]
+        try:  # IP literals resolve to themselves
+            fetchers.ipaddress.ip_address(host)
+            return [host]
+        except ValueError:
+            raise OSError("no such host") from None
+
+    monkeypatch.setattr(fetchers, "_resolve", resolve)
+
+
+@pytest.fixture
+def serve(monkeypatch):
+    """Install a handler(request) -> httpx.Response as the HTTP transport."""
+
+    def install(handler):
+        monkeypatch.setattr(fetchers, "_transport", httpx.MockTransport(handler))
+
+    return install
+
+
+# ── Address check ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ftp://cs.example.edu/syllabus.html",
+        "file:///etc/passwd",
+        "https://",
+        "http://127.0.0.1/",
+        "http://localhost.invalid/",  # doesn't resolve
+        "http://[::1]:8000/",
+        "http://169.254.169.254/computeMetadata/v1/",
+        "http://metadata.example.edu/",
+        "http://internal.example.edu/",
+        "http://mixed.example.edu/",
+        "http://mapped.example.edu/",
+        "http://100.64.0.1/",
+        "http://224.0.0.1/",
+        "https://user:pass@cs.example.edu/",
+        "http://cs.example.edu:99999/",
+    ],
+)
+async def test_unsafe_urls_are_refused(url):
+    with pytest.raises(UnsafeURL):
+        await check_url(url)
+
+
+async def test_public_url_is_allowed():
+    await check_url("https://cs.example.edu/syllabus.html")
+
+
+# ── Fetch ────────────────────────────────────────────────────────────────────
+
+
+def html_response(body: str, **headers) -> httpx.Response:
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/html; charset=utf-8", **headers},
+        content=body.encode(),
+    )
+
+
+async def test_fetch_returns_decoded_html(serve):
+    serve(lambda request: html_response("<p>Café</p>"))
+    assert await fetch_web_page("https://cs.example.edu/s.html") == "<p>Café</p>"
+
+
+async def test_redirects_are_followed_and_checked_each_hop(serve):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.path == "/old":
+            return httpx.Response(301, headers={"location": "/new"})
+        return html_response("<p>moved</p>")
+
+    serve(handler)
+    assert await fetch_web_page("https://cs.example.edu/old") == "<p>moved</p>"
+    assert seen == ["https://cs.example.edu/old", "https://cs.example.edu/new"]
+
+
+async def test_redirect_to_metadata_server_is_refused(serve):
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.host)
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/"})
+
+    serve(handler)
+    with pytest.raises(UnsafeURL):
+        await fetch_web_page("https://cs.example.edu/s.html")
+    assert requested == ["cs.example.edu"]  # never connected to the target
+
+
+async def test_redirect_loop_stops(serve):
+    serve(lambda request: httpx.Response(302, headers={"location": "/again"}))
+    with pytest.raises(FetchError, match="redirects"):
+        await fetch_web_page("https://cs.example.edu/s.html")
+
+
+async def test_oversized_page_is_refused(serve, monkeypatch):
+    monkeypatch.setattr(fetchers.settings, "WEB_FETCH_MAX_BYTES", 1000)
+    serve(
+        lambda request: httpx.Response(
+            200, headers={"content-type": "text/html"}, content=b"x" * 1001
+        )
+    )
+    with pytest.raises(FetchError, match="larger"):
+        await fetch_web_page("https://cs.example.edu/s.html")
+
+
+@pytest.mark.parametrize(
+    "status,content_type,match",
+    [
+        (404, "text/html", "HTTP 404"),
+        (200, "application/pdf", "expected an HTML page"),
+    ],
+)
+async def test_errors_and_non_html_are_refused(serve, status, content_type, match):
+    serve(
+        lambda request: httpx.Response(
+            status, headers={"content-type": content_type}, content=b"%PDF"
+        )
+    )
+    with pytest.raises(FetchError, match=match):
+        await fetch_web_page("https://cs.example.edu/s.html")
+
+
+# ── HTML → text ──────────────────────────────────────────────────────────────
+
+
+def test_parse_keeps_main_and_strips_chrome():
+    doc = parse_html("""
+        <html><head><title>T</title><style>p{}</style></head><body>
+        <a href="#main">Skip to main content</a>
+        <header><nav><ul><li>Schedule</li><li>Syllabus</li></ul></nav></header>
+        <main>
+          <h1>Syllabus</h1>
+          <p>Grading is <b>results</b>-based.</p>
+          <script>var x = "not text";</script>
+          <div style="display: none"><div>Loading</div>Submitted</div>
+          <p hidden>Secret</p>
+          <ul><li>One&nbsp;item</li><li>Two</li></ul>
+        </main>
+        <footer>Copyright &copy; 2026</footer>
+        </body></html>
+    """)
+    assert doc.text == "Syllabus\nGrading is results-based.\nOne item\nTwo"
+    assert [(h.level, h.text) for h in doc.headings] == [(1, "Syllabus")]
+    assert doc.text[doc.headings[0].start : doc.headings[0].end] == "Syllabus"
+    assert "Skip to main content" in doc.removed_text
+    assert "Schedule" in doc.removed_text and "Copyright © 2026" in doc.removed_text
+    assert "not text" not in doc.removed_text  # scripts aren't visible text
+
+
+def test_parse_without_main_keeps_everything_but_chrome():
+    doc = parse_html(
+        "<nav>Menu</nav><h2>Hours</h2><p>Mon <i>2pm</i></p><footer>F</footer>"
+    )
+    assert doc.text == "Hours\nMon 2pm"
+    assert doc.removed_text == "Menu\nF"
+
+
+def test_nested_inline_heading_text_is_joined():
+    doc = parse_html(
+        "<main><h3><strong>Tue</strong>: Lecture 2 &mdash; Git</h3><p>x</p></main>"
+    )
+    assert doc.headings[0].text == "Tue: Lecture 2 — Git"
