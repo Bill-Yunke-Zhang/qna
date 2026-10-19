@@ -924,7 +924,7 @@ Profile:
     query_prefix, document_prefix        # e.g. gte-Qwen2 and bge need a query instruction
     fallback_chunker per resource type:
         sliding_window(chunk_size, chunk_overlap)
-        | semantic(unit, breakpoint_similarity, max_chunk_size)   # not the retrieval threshold
+        | semantic(unit, breakpoint_similarity, max_chunk_size, oversized_window)   # not the retrieval threshold
     hash()                               # ingestion-side settings only: embedding_model,
                                          # embedding_revision, document_prefix, chunkers
                                          # (not query_prefix, which doesn't affect stored vectors)
@@ -941,8 +941,16 @@ Starting sizes (provisional, tuned locally before T6, then frozen by the CI
 test below): sliding window `chunk_size` 200 word-pieces, `chunk_overlap` 40.
 In `type-tailored`, each type gets its own fallback, with a reason (the spec
 requires one per choice):
-- **Markdown and web sections:** `semantic(sentence, 0.6, 200)`. Prose sections
+- **Markdown and web sections:** `semantic(sentence, 0.2, 200)`. Prose sections
   change topic mid-section, and a fixed window cuts across those changes.
+  A coherent span over the 200 cap isn't cut at the cap: the 200/40 window
+  runs over just that span, as the spec requires. **Breakpoint changed from
+  0.6 to 0.2 on 2026-10-19**, before anything was ingested, after measuring
+  MiniLM similarity between adjacent sentences in the eval pages and repo
+  markdown: medians 0.40 (syllabus), 0.22 (schedule) and 0.22 (markdown). At
+  0.6 nearly every sentence became its own chunk (syllabus: 104 chunks,
+  median 26 word-pieces), which would make axis 1 look bad for the wrong
+  reason. At 0.2 the median chunk is 43–56 word-pieces.
 - **PDFs (slide decks):** **one chunk per page**, since a slide is a
   self-contained unit; a 200/40 window only when a single page exceeds 200
   word-pieces. The baseline window instead runs across page boundaries, mixing

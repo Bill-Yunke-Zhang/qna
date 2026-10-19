@@ -19,7 +19,7 @@ import pytest
 
 PINNED_DEFINITION_HASHES = {
     "sliding-window": "32add4d0e3d75b80",
-    "type-tailored": "fef0814e8d005b28",
+    "type-tailored": "65cea5df4246259e",
     "embedding-alt": "3f00f174b1420b40",
 }
 

@@ -163,7 +163,9 @@ SEMANTIC_TEXT = (
 def semantic_plan(max_chunk_size: int = 100):
     section = Section(0, len(SEMANTIC_TEXT))
     # max_chunk_size below the section's size forces the fallback.
-    chunker = Semantic("sentence", 0.6, max_chunk_size)
+    chunker = Semantic(
+        "sentence", 0.6, max_chunk_size, SlidingWindow(max_chunk_size, 2)
+    )
     return plan_chunks(SEMANTIC_TEXT, [section], chunker, FAKE)
 
 
@@ -192,22 +194,34 @@ def test_semantic_splits_at_topic_changes():
     ]
 
 
-def test_semantic_chunks_stay_within_max_size():
+def assert_windowed_with_overlap(text: str, chunks: list[Chunk], cap: int) -> None:
+    assert len(chunks) > 1
+    for chunk, nxt in zip(chunks, chunks[1:]):
+        assert chunk.token_count <= cap
+        assert_on_word_boundaries(text, chunk)
+        assert nxt.start < chunk.end  # shared words, not a cut at the cap
+    assert chunks[-1].token_count <= cap
+
+
+def test_coherent_span_over_the_cap_is_windowed_with_overlap():
     plan = semantic_plan(max_chunk_size=6)
     same_topic = [[1.0, 0.0]] * len(plan.units_to_embed)
-    for chunk in finish_chunks(plan, same_topic):
-        assert chunk.token_count <= 6
-        assert_on_word_boundaries(SEMANTIC_TEXT, chunk)
+    chunks = finish_chunks(plan, same_topic)
+    assert_windowed_with_overlap(SEMANTIC_TEXT, chunks, 6)
+    assert chunks[0].start == 0 and chunks[-1].end == len(SEMANTIC_TEXT)
 
 
-def test_long_sentence_is_cut_before_embedding():
+def test_long_sentence_is_one_unit_windowed_with_overlap():
     text = numbered_words(30) + "."
-    plan = plan_chunks(
-        text, [Section(0, len(text))], Semantic("sentence", 0.6, 10), FAKE
-    )
-    assert len(plan.units_to_embed) == 4
-    chunks = finish_chunks(plan, [[1.0]] * 4)
-    assert all(c.token_count <= 10 for c in chunks)
+    chunker = Semantic("sentence", 0.6, 10, SlidingWindow(10, 3))
+    plan = plan_chunks(text, [Section(0, len(text))], chunker, FAKE)
+    assert plan.units_to_embed == [text]
+    assert_windowed_with_overlap(text, finish_chunks(plan, [[1.0]]), 10)
+
+
+def test_oversized_window_must_fit_the_cap():
+    with pytest.raises(ValueError):
+        Semantic("sentence", 0.2, 100, SlidingWindow(200, 40))
 
 
 def test_finish_needs_one_vector_per_unit():

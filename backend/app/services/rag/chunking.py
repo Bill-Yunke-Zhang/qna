@@ -208,9 +208,14 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
 def _sentence_units(
-    text: str, section: Section, max_tokens: int, counter: TokenCounter
+    text: str, section: Section, counter: TokenCounter
 ) -> list[list[_Word]]:
-    """Sentences of a section as word lists; longer sentences are cut to size."""
+    """
+    Sentences of a section as word lists. A sentence over the cap is kept
+    whole: it is a coherent span on its own, and step 3 windows it with
+    overlap. (Its embedding, used only to find breakpoints, sees the first
+    256 word-pieces.)
+    """
     units = []
     pos = section.start
     bounds = [
@@ -219,14 +224,8 @@ def _sentence_units(
     for end in (*bounds, section.end):
         words = _words(text, pos, end, counter)
         pos = end
-        if not words:
-            continue
-        if sum(w.tokens for w in words) <= max_tokens:
+        if words:
             units.append(words)
-        else:
-            units.extend(
-                list(words[i:j]) for i, j, _ in sliding_windows(words, max_tokens, 0)
-            )
     return units
 
 
@@ -281,7 +280,7 @@ def plan_chunks(
                 Chunk(words[0].start, words[-1].end, section.heading_path, tokens)
             )
         elif isinstance(chunker, Semantic):
-            units = _sentence_units(text, section, chunker.max_chunk_size, counter)
+            units = _sentence_units(text, section, counter)
             items.append(_SemanticSection(section, units))
             to_embed.extend(text[u[0].start : u[-1].end] for u in units)
         else:
@@ -294,9 +293,11 @@ def finish_chunks(
     plan: ChunkPlan, unit_vectors: Sequence[Sequence[float]] = ()
 ) -> list[Chunk]:
     """
-    Step 3. Semantic sections: neighbouring sentences are merged while each
-    one's similarity to the one before stays at or above
-    `breakpoint_similarity` and the chunk stays within `max_chunk_size`.
+    Step 3. Semantic sections: neighbouring sentences are merged into a span
+    while each one's similarity to the one before stays at or above
+    `breakpoint_similarity`. A span within `max_chunk_size` is one chunk; a
+    longer one is not cut at the cap but windowed, with overlap, by the
+    chunker's `oversized` sliding window.
     """
     if len(unit_vectors) != len(plan.units_to_embed):
         raise ValueError(
@@ -314,30 +315,23 @@ def finish_chunks(
 
 
 def _merge_semantic(item: _SemanticSection, vectors, chunker: Semantic) -> list[Chunk]:
-    chunks = []
-    current: list[_Word] = []
-    tokens = 0
+    spans: list[list[_Word]] = []
     previous = None
     for unit in item.units:
         vector = next(vectors)
-        unit_tokens = sum(w.tokens for w in unit)
-        if current and (
-            _cosine(previous, vector) < chunker.breakpoint_similarity
-            or tokens + unit_tokens > chunker.max_chunk_size
-        ):
-            chunks.append(
-                Chunk(
-                    current[0].start, current[-1].end, item.section.heading_path, tokens
-                )
-            )
-            current, tokens = [], 0
-        current.extend(unit)
-        tokens += unit_tokens
+        if not spans or _cosine(previous, vector) < chunker.breakpoint_similarity:
+            spans.append([])
+        spans[-1].extend(unit)
         previous = vector
-    if current:
-        chunks.append(
-            Chunk(current[0].start, current[-1].end, item.section.heading_path, tokens)
-        )
+
+    path = item.section.heading_path
+    chunks = []
+    for span in spans:
+        tokens = sum(w.tokens for w in span)
+        if tokens <= chunker.max_chunk_size:
+            chunks.append(Chunk(span[0].start, span[-1].end, path, tokens))
+        else:
+            chunks.extend(_window_chunks(span, chunker.oversized, path))
     return chunks
 
 
