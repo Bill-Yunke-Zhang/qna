@@ -1214,6 +1214,29 @@ see both versions).
   (the pages' "Loading…" and alert boxes). Each Text Fragment term is taken
   from a single line of the stripped text, since a term must match inside
   one block of the live page.
+- **The live schedule is drawn by JavaScript** (found 2026-10-19). Its HTML
+  has an empty `<div id="weeks">` and the whole schedule as JSON in
+  `<script id="schedule-data">`, which `js/schedule.js` draws for one lecture
+  section at a time (`sec003` Tue/Thu, `sec006` Mon/Wed). Fetching doesn't
+  run JavaScript, so `parse_html` draws the JSON itself in the same
+  structure (an `h2` per week, an `h3` per entry) and ingests **both
+  sections**. An entry whose visible text is the same in both sections
+  (copies can differ only in link targets) is kept once, with each section's
+  date in its heading, e.g. "Lecture 2 — Claude Code in Practice (Section 003:
+  Tue Sep 08; Section 006: Mon Sep 07)"; duplicates would fill two of the
+  `TOP_K` slots. A page that strips to under 200 characters is refused with
+  an error, so another JavaScript-drawn page fails loudly instead of being
+  indexed as one empty chunk.
+  *Rejected:* a headless browser (Chromium adds ~400 MB to the image and
+  memory on a VM that's already tight with gte-Qwen2 loaded); uploading the
+  schedule instead (the spec makes URL ingestion the primary path, and the
+  schedule changes during the semester).
+  **Schedule citations may only open the page, not highlight a line.** The
+  page is drawn after it loads, only the reader's chosen section is shown
+  (a link into the other section's dates can't match), and our headings add
+  dates the live `h3` doesn't have, so a fragment prefix taken from a heading
+  won't match. The page still opens; T10 says so. The eval snapshot in
+  `eval/sample_data/web/schedule.html` is already drawn and is unaffected.
 - **Repos:** shallow clone into a temporary directory, deleted after parsing.
   **Symlinks are skipped**, and every file's resolved path must stay inside the
   clone directory. Otherwise a `.md` symlinked to `/app/.env` or
