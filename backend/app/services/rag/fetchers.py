@@ -16,7 +16,9 @@ the same check on each. Responses are capped in size.
 from __future__ import annotations
 
 import asyncio
+import html as html_lib
 import ipaddress
+import json
 import re
 import socket
 from dataclasses import dataclass
@@ -347,10 +349,11 @@ def parse_html(html: str) -> WebDocument:
     """
     Strip a page to its text, keeping heading positions. When the page has a
     `<main>` element, only its contents are kept; everything else visible
-    goes to `removed_text`.
+    goes to `removed_text`. A course schedule drawn by JavaScript is
+    rendered here first (`_render_embedded_schedule`).
     """
     parser = _PageParser()
-    parser.feed(html)
+    parser.feed(_render_embedded_schedule(html))
     parser.close()
     keep = "main" if parser.saw_main else "other"
 
@@ -376,3 +379,101 @@ def parse_html(html: str) -> WebDocument:
         headings=tuple(headings),
         removed_text="\n".join(removed),
     )
+
+
+# Fewer characters than this after stripping means the content wasn't in the
+# HTML, most likely because the page draws it with JavaScript.
+MIN_PAGE_TEXT_CHARS = 200
+
+
+def check_has_content(doc: WebDocument) -> None:
+    """Refuse a page that strips to almost nothing instead of indexing it."""
+    if len(doc.text) < MIN_PAGE_TEXT_CHARS:
+        raise FetchError(
+            f"page has only {len(doc.text)} characters of text; its content may "
+            "be drawn by JavaScript, which ingestion doesn't run. Upload a saved "
+            "copy instead."
+        )
+
+
+# ── JavaScript-drawn course schedule ─────────────────────────────────────────
+#
+# The live schedule (aicoding.cs.wisc.edu/…/schedule.html) ships an empty
+# `<div id="weeks">` and the whole schedule as JSON in
+# `<script id="schedule-data" type="application/json">`, which js/schedule.js
+# draws for one lecture section at a time. We draw it here in the same
+# structure (an h2 per week, an h3 per entry, the entry's HTML body), for
+# every section. Most entries are identical across sections (lectures differ
+# only by day), so each is kept once with every section's date in its
+# heading; duplicates would take two of the TOP_K retrieval slots.
+
+_SCHEDULE_DATA = re.compile(
+    r"<script\b[^>]*\bid=[\"']schedule-data[\"'][^>]*>(.*?)</script>",
+    re.IGNORECASE | re.DOTALL,
+)
+_WEEKS_DIV = re.compile(r"<div\b[^>]*\bid=[\"']weeks[\"'][^>]*>", re.IGNORECASE)
+_DAY_ORDER = ("Mon", "Tue", "Wed", "Thu", "Fri")
+
+
+def _render_embedded_schedule(html: str) -> str:
+    match = _SCHEDULE_DATA.search(html)
+    if not match:
+        return html
+    try:
+        data = json.loads(match.group(1))
+        rendered = _schedule_html(data)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise FetchError(
+            f"the page's schedule data has an unexpected format: {exc!r}"
+        ) from None
+    weeks = _WEEKS_DIV.search(html)
+    if weeks:
+        return html[: weeks.end()] + rendered + html[weeks.end() :]
+    return html[: match.start()] + rendered + html[match.start() :]
+
+
+def _schedule_html(data: dict) -> str:
+    sections = [
+        (s["key"], str(s.get("label") or f"Section {s['key']}").split("·")[0].strip())
+        for s in data["sections"]
+    ]
+    banners = data.get("banners") or {}
+    parts = []
+    for week in data["weeks"]:
+        number = week["week"]
+        parts.append(f"<h2>Week {number}</h2>")
+        banner = banners.get(str(number)) or {}
+        for key in ("unit", "event"):
+            if banner.get(key):
+                parts.append(f"<p>{banner[key]}</p>")
+
+        # Entries match on visible text: sections' copies of a lecture can
+        # differ only in link targets (e.g. quiz-02-lec003 vs -lec006.html).
+        # Visible text -> (title, first section's body HTML, dates), in order
+        # of first appearance.
+        entries: dict[tuple[str, str, str], tuple[str, str, list[tuple[str, str]]]] = {}
+        for key, label in sections:
+            days = week.get(f"sec{key}") or {}
+            for day in _DAY_ORDER:
+                for block in days.get(day) or []:
+                    title, body = block["title"], block["body"]
+                    visible = (block["kind"], _visible(title), _visible(body))
+                    entry = entries.setdefault(visible, (title, body, []))
+                    entry[2].append((label, f"{day} {block['date']}"))
+
+        for title, body, dates in entries.values():
+            if len(dates) == len(sections) and len({w for _, w in dates}) == 1:
+                when = dates[0][1]  # the same day in every section
+            else:
+                when = "; ".join(f"{label}: {w}" for label, w in dates)
+            parts.append(f"<h3>{title} ({html_lib.escape(when)})</h3>")
+            parts.append(f"<div>{body}</div>")
+    return "\n".join(parts)
+
+
+_TAG = re.compile(r"<[^>]*>")
+
+
+def _visible(fragment: str) -> str:
+    """Rough visible text of an HTML fragment, for comparing entries."""
+    return " ".join(html_lib.unescape(_TAG.sub(" ", fragment)).split())

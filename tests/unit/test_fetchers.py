@@ -7,6 +7,8 @@ httpx.MockTransport.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -14,6 +16,7 @@ from app.services.rag import fetchers
 from app.services.rag.fetchers import (
     FetchError,
     UnsafeURL,
+    check_has_content,
     check_url,
     fetch_web_page,
     parse_html,
@@ -202,3 +205,91 @@ def test_nested_inline_heading_text_is_joined():
         "<main><h3><strong>Tue</strong>: Lecture 2 &mdash; Git</h3><p>x</p></main>"
     )
     assert doc.headings[0].text == "Tue: Lecture 2 — Git"
+
+
+# ── JavaScript-drawn schedule ────────────────────────────────────────────────
+
+
+def schedule_page(data: dict | str) -> str:
+    payload = data if isinstance(data, str) else json.dumps(data)
+    return (
+        '<main><h1>Course Schedule</h1><div id="weeks" class="schedule-weeks"></div>'
+        "<noscript>This schedule needs JavaScript</noscript>"
+        f'<script id="schedule-data" type="application/json">{payload}</script>'
+        "</main>"
+    )
+
+
+def block(kind, date, title, body):
+    return {"kind": kind, "date": date, "title": title, "body": body}
+
+
+SCHEDULE = {
+    "sections": [
+        {"key": "003", "label": "Section 003 · Tue/Thu"},
+        {"key": "006", "label": "Section 006 · Mon/Wed"},
+    ],
+    "banners": {"1": {"unit": "<strong>Unit 1</strong> &mdash; Basics"}},
+    "weeks": [
+        {
+            "week": 1,
+            "sec003": {
+                "Tue": [block("fixed", "Sep 01", "P1 Released", "<p>Due Sep 15</p>")],
+                "Thu": [
+                    block(
+                        "lecture",
+                        "Sep 03",
+                        "Lecture 1 &mdash; Intro",
+                        '<a href="quiz-lec003.html">Quiz 1 results</a>',
+                    )
+                ],
+            },
+            "sec006": {
+                "Tue": [block("fixed", "Sep 01", "P1 Released", "<p>Due Sep 15</p>")],
+                "Wed": [
+                    block(
+                        "lecture",
+                        "Sep 02",
+                        "Lecture 1 &mdash; Intro",
+                        '<a href="quiz-lec006.html">Quiz 1 results</a>',
+                    ),
+                    block("lecture", "Sep 02", "Lab", "<p>Section 006 only</p>"),
+                ],
+            },
+        }
+    ],
+}
+
+
+def test_embedded_schedule_is_drawn_once_per_entry_with_each_sections_date():
+    doc = parse_html(schedule_page(SCHEDULE))
+    assert [(h.level, h.text) for h in doc.headings] == [
+        (1, "Course Schedule"),
+        (2, "Week 1"),
+        (3, "P1 Released (Tue Sep 01)"),
+        # Same visible text; only the link targets differ.
+        (3, "Lecture 1 — Intro (Section 003: Thu Sep 03; Section 006: Wed Sep 02)"),
+        (3, "Lab (Section 006: Wed Sep 02)"),
+    ]
+    assert "Unit 1 — Basics" in doc.text
+    assert "Due Sep 15" in doc.text and "Quiz 1 results" in doc.text
+    assert "JavaScript" not in doc.text  # <noscript> is still dropped
+
+
+def test_malformed_schedule_data_is_an_error():
+    with pytest.raises(FetchError, match="unexpected format"):
+        parse_html(schedule_page("{not json"))
+    with pytest.raises(FetchError, match="unexpected format"):
+        parse_html(schedule_page({"weeks": []}))  # no "sections"
+
+
+def test_page_without_schedule_data_is_unchanged():
+    html = "<main><h1>Syllabus</h1><p>Grading</p></main>"
+    assert parse_html(html).text == "Syllabus\nGrading"
+
+
+def test_page_with_almost_no_text_is_refused():
+    doc = parse_html('<main><h1>Course Schedule</h1><div id="weeks"></div></main>')
+    with pytest.raises(FetchError, match="JavaScript"):
+        check_has_content(doc)
+    check_has_content(parse_html("<main><p>" + "word " * 60 + "</p></main>"))
