@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     # Texts per Infinity request; match Infinity's own INFINITY_BATCH_SIZE.
     INFINITY_BATCH_SIZE: int = 16
 
+    # MiniLM's word-piece tokenizer, which counts chunk sizes in every profile
+    # (§6.2). Baked into the image outside the /app bind mount.
+    CHUNK_TOKENIZER_PATH: str = "/opt/tokenizers/minilm/tokenizer.json"
+
+    # Fetching syllabus and schedule pages (§7.4, §8).
+    WEB_FETCH_TIMEOUT_S: float = 20.0
+    WEB_FETCH_MAX_BYTES: int = 5_000_000
+    WEB_FETCH_MAX_REDIRECTS: int = 5
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]
