@@ -146,6 +146,15 @@ RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
   embed `units_to_embed` if any, `finish_chunks`) so semantic chunking never
   calls Infinity from a worker thread. Markdown and PDF only need to produce
   `Section`s to reuse the same chunkers.
+- `rag/ingestion.py`: the background ingestion task and the in-process sync
+  registry (`claim` / `release` / `is_syncing`). A request claims the source
+  (`SyncInProgress` → 409) and schedules `ingest(...)` with a loader that
+  returns `Document`s (text, sections, and how to locate a chunk). Each
+  profile is chunked, embedded and inserted under a new `sync_id`, then
+  switched to in `index_syncs`; old chunks are deleted after
+  `CLEANUP_GRACE_S`. Unchanged content isn't re-embedded, and a failed
+  profile keeps its previous version and records `last_error`.
+  `web_page_loader(resource)` covers URL syllabus/schedule resources.
 
 Follow the
 same rules: take an `AsyncSession`, flush without committing, raise
