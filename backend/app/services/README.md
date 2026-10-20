@@ -42,7 +42,10 @@ miss the new or changed post.
 - `set_post_accepted` only accepts `ANSWER` posts (409 for `FOLLOWUP`).
   Accepting one **un-accepts any other post** in the same question, so at most
   one answer is accepted. It records `accepted_by_user_id` and `accepted_at`.
-  Un-accepting clears them.
+  Un-accepting clears them. When an accepted answer loses acceptance it also
+  clears the course's historical Q&A `content_hash`, and returns `True` so the
+  router runs `ingestion.drop_qa_thread` after committing
+  (`docs/design-rag.md` §4.6).
 - `close_question` and `reopen_question` set or clear `closed_at` and
   `closed_by_user_id`, and return 409 if the thread is already in the target
   state.
@@ -139,7 +142,9 @@ RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
 - `rag/clients.py`: the only code that talks to Ollama, Infinity and ChromaDB.
 - `rag/fetchers.py`: fetches web pages (only public `http(s)` addresses,
   checked again on every redirect) and strips them to text with heading
-  positions (`parse_html`).
+  positions (`parse_html`); checks uploads and reads zips in memory, with
+  sizes counted while decompressing (`read_upload`); and reads the threads
+  eligible for historical Q&A (`read_historical_qa`).
 - `rag/chunking.py`: splits a document into sections by structure (web pages
   by heading), runs the profile's fallback chunker on oversized sections, and
   builds Text Fragment citations. Chunking is three steps (`plan_chunks`,
@@ -154,7 +159,11 @@ RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
   switched to in `index_syncs`; old chunks are deleted after
   `CLEANUP_GRACE_S`. Unchanged content isn't re-embedded, and a failed
   profile keeps its previous version and records `last_error`.
-  `web_page_loader(resource)` covers URL syllabus/schedule resources.
+  Loaders: `web_page_loader(resource)` for URL syllabus/schedule resources;
+  `documents_loader(...)` for uploads, parsed in the request with
+  `parse_upload` (so a bad file is a 422); `historical_qa_loader(course_id)`
+  for the `historical_qa` source, one atomic chunk per thread.
+  `drop_qa_thread` is the §4.6 un-accept cleanup.
 
 Follow the
 same rules: take an `AsyncSession`, flush without committing, raise

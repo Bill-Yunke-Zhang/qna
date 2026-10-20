@@ -13,6 +13,43 @@ def _headers(token: str) -> dict:
 
 
 class TestThreadLifecycle:
+    def test_switching_and_unaccepting_answers(
+        self, base_url, course_id, student_token, staff_token, category_id
+    ):
+        # Losing acceptance also schedules the historical Q&A cleanup
+        # (docs/design-rag.md §4.6); it must never fail the request, even
+        # with ChromaDB unreachable.
+        r = httpx.post(
+            f"{base_url}/api/courses/{course_id}/questions",
+            json={"title": "Which answer?", "body": "Two answers incoming.",
+                  "category_ids": [category_id]},
+            headers=_headers(student_token),
+        )
+        assert r.status_code == 201, r.text
+        qid = r.json()["id"]
+        ids = []
+        for token, body in ((staff_token, "First answer."), (student_token, "Second.")):
+            r = httpx.post(
+                f"{base_url}/api/courses/{course_id}/questions/{qid}/posts",
+                json={"kind": "ANSWER", "body": body},
+                headers=_headers(token),
+            )
+            assert r.status_code == 201, r.text
+            ids.append(r.json()["posts"][-1]["id"])
+
+        def accept(post_id, value):
+            r = httpx.patch(
+                f"{base_url}/api/courses/{course_id}/questions/{qid}/posts/{post_id}/accept",
+                json={"is_accepted": value},
+                headers=_headers(staff_token),
+            )
+            assert r.status_code == 200, r.text
+            return {p["id"]: p["is_accepted"] for p in r.json()["posts"]}
+
+        assert accept(ids[0], True) == {ids[0]: True, ids[1]: False}
+        assert accept(ids[1], True) == {ids[0]: False, ids[1]: True}
+        assert accept(ids[1], False) == {ids[0]: False, ids[1]: False}
+
     def test_student_asks_staff_answers_and_accepts(
         self, base_url, course_id, student_token, staff_token, category_id
     ):

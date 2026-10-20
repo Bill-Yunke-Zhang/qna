@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,7 @@ from ..schemas.qa import (
     QuestionSummary,
 )
 from ..services import qa_service
+from ..services.rag import ingestion
 
 router = APIRouter(tags=["qa"])
 logger = structlog.get_logger()
@@ -206,11 +207,15 @@ async def set_post_accepted(
     body: PostAcceptPatch,
     member: Annotated[CourseMember, Depends(require_course_staff)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    background_tasks: BackgroundTasks,
 ):
-    question = await qa_service.set_post_accepted(
+    question, unaccepted = await qa_service.set_post_accepted(
         db, course_id, question_id, post_id, member.user, body.is_accepted
     )
     await db.commit()
+    if unaccepted:
+        # After the commit, so a ChromaDB failure can't undo the accept change.
+        background_tasks.add_task(ingestion.drop_qa_thread, course_id, question_id)
     return qa_service.serialize_question_detail(question)
 
 

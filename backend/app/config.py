@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     WEB_FETCH_MAX_BYTES: int = 5_000_000
     WEB_FETCH_MAX_REDIRECTS: int = 5
 
+    # Uploads (§7.2). The total matches nginx's client_max_body_size (50m) on
+    # /api/. Zip limits are counted while decompressing, never taken from the
+    # sizes the zip declares, so a zip bomb can't exhaust memory.
+    UPLOAD_MAX_BYTES: int = 50 * 1024 * 1024
+    UPLOAD_MAX_FILES: int = 500
+    UPLOAD_MAX_ENTRY_BYTES: int = 50 * 1024 * 1024
+    UPLOAD_MAX_UNCOMPRESSED_BYTES: int = 200 * 1024 * 1024
+
     # After a sync switches to its new chunks, how long to keep the old ones
     # so queries that read the previous sync_id can finish (§7.3).
     CLEANUP_GRACE_S: float = 30.0

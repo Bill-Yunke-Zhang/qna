@@ -1,7 +1,8 @@
 """
 Getting course material into memory for ingestion (docs/design-rag.md §5.2,
-§7.4, §8). So far: web pages (syllabus, schedule), fetched and parsed into a
-`WebDocument`. Repo clones, uploads and historical Q&A come later.
+§7.4, §8): web pages (syllabus, schedule), fetched and parsed into a
+`WebDocument`; uploads, checked and unzipped in memory; and the course's
+historical Q&A threads, read from MySQL. Repo clones come later.
 
 **URL fetching is an SSRF surface.** The backend runs next to MySQL, Redis,
 Ollama and the GCP metadata server (`169.254.169.254`, which hands out the
@@ -10,24 +11,32 @@ resolves to must be public, and redirects are followed one hop at a time with
 the same check on each. Responses are capped in size.
 **Accepted risk (§8):** DNS rebinding between the check and the connection.
 
-`parse_html` is CPU-bound; callers run it with `asyncio.to_thread` (§5.2).
+`parse_html` and `read_upload` are CPU-bound; callers run them with
+`asyncio.to_thread` (§5.2).
 """
 
 from __future__ import annotations
 
 import asyncio
 import html as html_lib
+import io
 import ipaddress
 import json
 import re
 import socket
+import stat
+import zipfile
+import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import settings
+from ...models.qa import Post, Question
 
 # Tests swap these for an httpx.MockTransport and a fake resolver.
 _transport: httpx.AsyncBaseTransport | None = None
@@ -477,3 +486,167 @@ _TAG = re.compile(r"<[^>]*>")
 def _visible(fragment: str) -> str:
     """Rough visible text of an HTML fragment, for comparing entries."""
     return " ".join(html_lib.unescape(_TAG.sub(" ", fragment)).split())
+
+
+# ── Uploads ──────────────────────────────────────────────────────────────────
+#
+# The upload fallback (§3.2, §7.2). Nothing is written to disk: a zip is read
+# entry by entry in memory and the files are handed on as bytes. Every size is
+# counted while decompressing, since a zip's declared sizes can lie.
+
+
+class UploadError(FetchError):
+    """The upload is refused (the request returns 422)."""
+
+
+@dataclass(frozen=True)
+class UploadedFile:
+    path: str  # inside the zip, '/'-separated; the file name for a single file
+    data: bytes
+
+
+UPLOAD_FILE_TYPES = (".html", ".htm", ".md", ".pdf")
+# What a zip can contribute: repo files. Anything else in it is skipped unread.
+ZIP_MEMBER_TYPES = (".md", ".pdf")
+
+_READ_PIECE = 64 * 1024
+_DRIVE = re.compile(r"^[A-Za-z]:")
+
+
+def read_upload(filename: str, data: bytes) -> list[UploadedFile]:
+    """
+    Check an uploaded file against the limits in §7.2 and return its files:
+    the file itself, or a zip's `.md` and `.pdf` entries. Raises `UploadError`.
+    CPU-bound for a zip; callers run it with `asyncio.to_thread`.
+    """
+    if len(data) > settings.UPLOAD_MAX_BYTES:
+        raise UploadError(
+            f"upload is larger than {settings.UPLOAD_MAX_BYTES // (1024 * 1024)} MB"
+        )
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    lower = name.lower()
+    if lower.endswith(".zip"):
+        return _read_zip(data)
+    if lower.endswith(UPLOAD_FILE_TYPES):
+        if not data.strip():
+            raise UploadError(f"{name} is empty")
+        return [UploadedFile(name, data)]
+    raise UploadError(
+        f"{name or 'the upload'} is not one of "
+        f"{', '.join(UPLOAD_FILE_TYPES + ('.zip',))}"
+    )
+
+
+def _read_zip(data: bytes) -> list[UploadedFile]:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise UploadError("not a valid zip file") from None
+
+    files: list[UploadedFile] = []
+    seen: set[str] = set()
+    total = 0
+    with archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            path = _zip_entry_path(info)
+            if path.startswith("__MACOSX/") or not path.lower().endswith(
+                ZIP_MEMBER_TYPES
+            ):
+                continue
+            if path in seen:
+                raise UploadError(f"the zip has {path} more than once")
+            seen.add(path)
+            if len(files) == settings.UPLOAD_MAX_FILES:
+                raise UploadError(
+                    f"the zip has more than {settings.UPLOAD_MAX_FILES} "
+                    ".md and .pdf files"
+                )
+            body = _read_entry(archive, info, path, settings.UPLOAD_MAX_ENTRY_BYTES)
+            total += len(body)
+            if total > settings.UPLOAD_MAX_UNCOMPRESSED_BYTES:
+                raise UploadError(
+                    "the zip's files add up to more than "
+                    f"{settings.UPLOAD_MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB"
+                )
+            files.append(UploadedFile(path, body))
+    if not files:
+        raise UploadError("the zip has no .md or .pdf files")
+    return files
+
+
+def _zip_entry_path(info: zipfile.ZipInfo) -> str:
+    """The entry's relative path; refuses anything that could point outside."""
+    raw = info.filename.replace("\\", "/")
+    parts = [p for p in raw.split("/") if p not in ("", ".")]
+    if raw.startswith("/") or _DRIVE.match(raw) or ".." in parts or not parts:
+        raise UploadError(f"zip entry {info.filename!r} has an unsafe path")
+    # Unix mode bits sit in the high 16 bits of external_attr.
+    if stat.S_ISLNK(info.external_attr >> 16):
+        raise UploadError(f"zip entry {info.filename!r} is a symbolic link")
+    return "/".join(parts)
+
+
+def _read_entry(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, path: str, limit: int
+) -> bytes:
+    body = bytearray()
+    try:
+        with archive.open(info) as entry:
+            while piece := entry.read(_READ_PIECE):
+                body += piece
+                if len(body) > limit:
+                    raise UploadError(
+                        f"{path} is larger than {limit // (1024 * 1024)} MB "
+                        "uncompressed"
+                    )
+    except UploadError:
+        raise
+    # Encrypted entries (RuntimeError), unsupported compression
+    # (NotImplementedError) and corrupt data (BadZipFile, zlib.error, EOFError).
+    except (
+        RuntimeError,
+        NotImplementedError,
+        zipfile.BadZipFile,
+        zlib.error,
+        EOFError,
+    ):
+        raise UploadError(f"could not read {path} from the zip") from None
+    return bytes(body)
+
+
+# ── Historical Q&A ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class QAThread:
+    question_id: int
+    title: str
+    question: str
+    accepted_post_id: int
+    answer: str
+
+
+async def read_historical_qa(db: AsyncSession, course_id: int) -> list[QAThread]:
+    """
+    The course's threads whose accepted answer was written by a person
+    (§4.6, §7.4). Accepted AI answers are left out, so AI text never
+    re-enters the index; retraction only applies to AI posts, so it needs
+    no check here.
+    """
+    rows = await db.execute(
+        select(Question.id, Question.title, Question.body, Post.id, Post.body)
+        .join(Post, Post.question_id == Question.id)
+        .where(
+            Question.course_id == course_id,
+            Post.kind == "ANSWER",
+            Post.is_accepted.is_(True),
+            Post.author_role != "AI",
+        )
+        .order_by(Question.id)
+    )
+    return [
+        QAThread(qid, title, body.strip(), post_id, answer.strip())
+        for qid, title, body, post_id, answer in rows
+    ]

@@ -7,7 +7,10 @@ httpx.MockTransport.
 
 from __future__ import annotations
 
+import io
 import json
+import stat
+import zipfile
 
 import httpx
 import pytest
@@ -16,10 +19,13 @@ from app.services.rag import fetchers
 from app.services.rag.fetchers import (
     FetchError,
     UnsafeURL,
+    UploadedFile,
+    UploadError,
     check_has_content,
     check_url,
     fetch_web_page,
     parse_html,
+    read_upload,
 )
 
 PUBLIC_IP = "93.184.215.14"
@@ -293,3 +299,106 @@ def test_page_with_almost_no_text_is_refused():
     with pytest.raises(FetchError, match="JavaScript"):
         check_has_content(doc)
     check_has_content(parse_html("<main><p>" + "word " * 60 + "</p></main>"))
+
+
+# ── Uploads ──────────────────────────────────────────────────────────────────
+
+
+def zip_of(entries) -> bytes:
+    """`entries`: name -> bytes, or a ZipInfo -> bytes for special entries."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_single_files_pass_through():
+    (f,) = read_upload(r"C:\Users\me\syllabus.HTML", b"<p>hi</p>")
+    assert f == UploadedFile("syllabus.HTML", b"<p>hi</p>")
+
+
+@pytest.mark.parametrize("name", ["notes.txt", "page.docx", "noext", ""])
+def test_other_file_types_are_refused(name):
+    with pytest.raises(UploadError, match="is not one of"):
+        read_upload(name, b"data")
+
+
+def test_empty_file_is_refused():
+    with pytest.raises(UploadError, match="empty"):
+        read_upload("syllabus.html", b"  \n")
+
+
+def test_upload_size_is_capped(monkeypatch):
+    monkeypatch.setattr(fetchers.settings, "UPLOAD_MAX_BYTES", 10)
+    with pytest.raises(UploadError, match="larger than"):
+        read_upload("syllabus.html", b"x" * 11)
+
+
+def test_zip_keeps_md_and_pdf_and_skips_the_rest():
+    data = zip_of(
+        {
+            "README.md": b"# Read me",
+            "./docs/guide.md": b"# Guide",
+            "slides/week1.PDF": b"%PDF-1.4",
+            "src/main.py": b"print()",
+            ".DS_Store": b"\0",
+            "__MACOSX/docs/._guide.md": b"junk",
+            "docs/": b"",
+        }
+    )
+    files = read_upload("repo.zip", data)
+    assert [f.path for f in files] == ["README.md", "docs/guide.md", "slides/week1.PDF"]
+    assert files[1].data == b"# Guide"
+
+
+@pytest.mark.parametrize(
+    "name", ["../secrets.md", "docs/../../x.md", "/etc/x.md", "C:/x.md", r"..\x.md"]
+)
+def test_zip_paths_outside_are_refused(name):
+    with pytest.raises(UploadError, match="unsafe path"):
+        read_upload("repo.zip", zip_of({name: b"# x"}))
+
+
+def test_zip_symlinks_are_refused():
+    link = zipfile.ZipInfo("docs/env.md")
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with pytest.raises(UploadError, match="symbolic link"):
+        read_upload("repo.zip", zip_of({link: b"/app/.env"}))
+
+
+def test_zip_bomb_is_stopped_while_decompressing(monkeypatch):
+    monkeypatch.setattr(fetchers.settings, "UPLOAD_MAX_ENTRY_BYTES", 1_000_000)
+    data = zip_of({"bomb.md": b"0" * 5_000_000})
+    assert len(data) < 50_000  # small on the wire
+    with pytest.raises(UploadError, match="bomb.md is larger than"):
+        read_upload("repo.zip", data)
+
+
+def test_zip_lying_about_its_sizes_is_still_capped(monkeypatch):
+    monkeypatch.setattr(fetchers.settings, "UPLOAD_MAX_ENTRY_BYTES", 1_000_000)
+    data = bytearray(zip_of({"a.md": b"0" * 2_000_000}))
+    # Rewrite the declared uncompressed size (central directory) to 10 bytes.
+    cd = data.rfind(b"PK\x01\x02")
+    data[cd + 24 : cd + 28] = (10).to_bytes(4, "little")
+    with pytest.raises(UploadError):
+        read_upload("repo.zip", bytes(data))
+
+
+def test_zip_total_and_file_count_are_capped(monkeypatch):
+    monkeypatch.setattr(fetchers.settings, "UPLOAD_MAX_UNCOMPRESSED_BYTES", 150)
+    with pytest.raises(UploadError, match="add up to more than"):
+        read_upload("repo.zip", zip_of({f"{i}.md": b"x" * 60 for i in range(3)}))
+
+    monkeypatch.setattr(fetchers.settings, "UPLOAD_MAX_FILES", 2)
+    with pytest.raises(UploadError, match="more than 2"):
+        read_upload("repo.zip", zip_of({f"{i}.md": b"x" for i in range(3)}))
+
+
+def test_bad_zips_are_refused():
+    with pytest.raises(UploadError, match="not a valid zip"):
+        read_upload("repo.zip", b"PK not really")
+    with pytest.raises(UploadError, match="no .md or .pdf"):
+        read_upload("repo.zip", zip_of({"main.py": b"print()"}))
+    with pytest.raises(UploadError, match="more than once"):
+        read_upload("repo.zip", zip_of({"a.md": b"1", "./a.md": b"2"}))
