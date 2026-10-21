@@ -291,8 +291,11 @@ async def set_post_accepted(
     if target.kind != "ANSWER":
         raise ConflictError("Only ANSWER posts can be marked accepted")
 
+    # Accepting un-accepts every other post; un-accepting only touches the
+    # target, so another accepted answer in the thread stays accepted.
     unaccepted = any(
-        p.is_accepted and (p.id != target.id or not is_accepted) for p in question.posts
+        p.is_accepted and (p.id != target.id if is_accepted else p.id == target.id)
+        for p in question.posts
     )
     if unaccepted:
         # In this commit, not after the ChromaDB cleanup: otherwise the next
