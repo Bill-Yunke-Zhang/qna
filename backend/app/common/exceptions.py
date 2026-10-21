@@ -37,6 +37,13 @@ class ConflictError(QnaError):
         super().__init__("CONFLICT", message, status.HTTP_409_CONFLICT)
 
 
+class InvalidInputError(QnaError):
+    """Input that passed schema validation but can't be acted on (422)."""
+
+    def __init__(self, message: str = "Invalid input"):
+        super().__init__("INVALID_INPUT", message, status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+
 class PayloadTooLargeError(QnaError):
     def __init__(self, message: str = "Payload too large"):
         super().__init__(
