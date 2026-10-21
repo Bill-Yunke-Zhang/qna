@@ -84,5 +84,7 @@ AI answers (`docs/design-rag.md` §4.4–4.5) are wired in:
   `/questions/{id}`. The staff app has its own copy.
 - `AskQuestionPage.tsx` navigates with `{ justAsked: true }`, and only then
   does `QuestionDetailPage.tsx` poll every 5 s, up to 36 times, until an AI
-  post appears. Opening a thread from the list doesn't poll.
+  post appears. The page clears that history state as soon as it reads it,
+  so a reload or Back doesn't poll again. Opening a thread from the list
+  doesn't poll.
 - Students never receive retracted AI answers, so there's nothing to hide here.

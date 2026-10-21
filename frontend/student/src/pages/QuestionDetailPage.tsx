@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle2, Loader2, Lock } from 'lucide-react';
 import { api } from '../lib/api';
 import { useCourse } from '../lib/CourseContext';
@@ -20,13 +20,16 @@ export default function QuestionDetailPage() {
   const { courseId } = useCourse();
   const { questionId } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const justAsked = Boolean((location.state as { justAsked?: boolean } | null)?.justAsked);
   const [question, setQuestion] = useState<QuestionDetail | null>(null);
   const [kind, setKind] = useState<'ANSWER' | 'FOLLOWUP'>('FOLLOWUP');
   const [body, setBody] = useState('');
   const [error, setError] = useState('');
   const [posting, setPosting] = useState(false);
-  const [polling, setPolling] = useState(false);
+  // The thread being polled for an AI answer, if any.
+  const [pollFor, setPollFor] = useState<string | null>(null);
+  const polling = pollFor !== null && pollFor === questionId;
 
   async function load() {
     if (!courseId) return null;
@@ -41,12 +44,20 @@ export default function QuestionDetailPage() {
   }, [courseId, questionId]);
 
   // Only right after asking (AskQuestionPage passes { justAsked: true });
-  // opening the thread later from the list doesn't poll.
+  // opening the thread later from the list doesn't poll. The flag is read
+  // once and cleared from history, so a reload or Back doesn't poll again
+  // and claim an answer is coming when none is.
   useEffect(() => {
-    if (!courseId || !justAsked) return;
+    if (!justAsked || !questionId) return;
+    setPollFor(questionId);
+    navigate(location.pathname, { replace: true, state: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [justAsked, questionId]);
+
+  useEffect(() => {
+    if (!courseId || !polling) return;
     let attempts = 0;
     let stopped = false;
-    setPolling(true);
     const timer = window.setInterval(async () => {
       attempts += 1;
       try {
@@ -55,7 +66,7 @@ export default function QuestionDetailPage() {
         if (data?.posts.some((p) => p.author_role === 'AI') || attempts >= POLL_ATTEMPTS) {
           stopped = true;
           window.clearInterval(timer);
-          setPolling(false);
+          setPollFor(null);
         }
       } catch {
         // A failed poll is retried on the next tick.
@@ -66,7 +77,7 @@ export default function QuestionDetailPage() {
       window.clearInterval(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [courseId, questionId, justAsked]);
+  }, [courseId, polling]);
 
   async function handlePost(e: React.FormEvent) {
     e.preventDefault();
