@@ -261,6 +261,17 @@ async def add_chunks(
         raise ServiceUnavailable("chromadb", _describe(exc)) from exc
 
 
+async def get_chunk_metadata(
+    collection: Any, where: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The metadata of every chunk matching `where` (no vectors or text)."""
+    try:
+        result = await collection.get(where=where, include=["metadatas"])
+    except Exception as exc:
+        raise ServiceUnavailable("chromadb", _describe(exc)) from exc
+    return list(result.get("metadatas") or [])
+
+
 async def delete_chunks(collection: Any, where: dict[str, Any]) -> None:
     try:
         await collection.delete(where=where)

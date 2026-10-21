@@ -8,14 +8,17 @@ what is skipped. The real services are covered by the integration tests.
 
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from types import SimpleNamespace
 
 import pytest
 
 from app.services.rag import chunking, clients, ingestion
 from app.services.rag.chunking import Section
-from app.services.rag.fetchers import FetchError
+from app.services.rag.fetchers import FetchError, UploadError
+from app.services.rag.fetchers import QAThread as FetchedThread
 from app.services.rag.ingestion import Document, SyncInProgress, web_document
 
 COURSE = 7
@@ -125,6 +128,14 @@ def page(body: str) -> str:
         "at four in the computer sciences building, room 1240.</p>"
         "</main>"
     )
+
+
+def zip_bytes(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
 
 
 def loader(html: str):
@@ -344,3 +355,176 @@ async def test_unchunked_types_are_one_chunk_per_section(env):
         "Course syllabus › Long thread",
         "Course syllabus › When is P1 due?",
     ]
+
+
+# ── Historical Q&A ───────────────────────────────────────────────────────────
+
+QA = ingestion.HISTORICAL_QA_SOURCE_KEY
+
+
+def thread(qid=1, post_id=10, title="When is P1 due?", answer="Sep 15 at 11:59pm."):
+    return FetchedThread(qid, title, "I can't find the P1 deadline.", post_id, answer)
+
+
+def qa_loader(*threads):
+    async def load():
+        return [ingestion.qa_document(t) for t in threads]
+
+    return load
+
+
+async def run_qa(load, profiles=("sliding-window",)):
+    await ingestion.claim(COURSE, QA)
+    await ingestion.ingest(
+        course_id=COURSE,
+        source_key=QA,
+        resource_id=None,
+        title=ingestion.HISTORICAL_QA_TITLE,
+        profiles=list(profiles),
+        load=load,
+    )
+
+
+async def test_qa_thread_is_one_chunk_with_its_ids(env):
+    await run_qa(qa_loader(thread(), thread(qid=2, post_id=20, title="Room?")))
+    items = sorted(
+        collection(env).items.values(), key=lambda i: i["metadata"]["question_id"]
+    )
+    assert len(items) == 2
+    meta, doc = items[0]["metadata"], items[0]["document"]
+    assert meta["label"] == "Past question › When is P1 due?"
+    assert meta["resource_type"] == "historical_qa"
+    assert meta["source_key"] == QA and "resource_id" not in meta
+    assert meta["source_url"] == "/questions/1" and "citation_url" not in meta
+    assert (meta["question_id"], meta["accepted_post_id"]) == (1, 10)
+    # The prompt tags the question and the answer separately (§5.5).
+    assert doc[: meta["answer_start"]].strip() == "I can't find the P1 deadline."
+    assert doc[meta["answer_start"] :] == "Sep 15 at 11:59pm."
+    # The title is embedded but not stored.
+    assert "When is P1 due?" not in doc
+    assert any(
+        t.startswith("When is P1 due?\nI can't find") for t in env.embedded[-1][1]
+    )
+
+
+async def test_qa_reindex_skips_unchanged_threads(env):
+    await run_qa(qa_loader(thread()))
+    embedded = len(env.embedded)
+    await run_qa(qa_loader(thread()))
+    assert len(env.embedded) == embedded
+
+
+async def test_qa_title_or_accepted_post_change_reembeds(env):
+    await run_qa(qa_loader(thread()))
+    first = env.store.rows[(COURSE, "sliding-window", QA)].content_hash
+    await run_qa(qa_loader(thread(title="When is Project 1 due?")))
+    second = env.store.rows[(COURSE, "sliding-window", QA)].content_hash
+    await run_qa(qa_loader(thread(title="When is Project 1 due?", post_id=11)))
+    third = env.store.rows[(COURSE, "sliding-window", QA)].content_hash
+    assert len({first, second, third}) == 3
+    (item,) = collection(env).items.values()
+    assert item["metadata"]["accepted_post_id"] == 11
+
+
+async def test_no_eligible_threads_is_an_empty_sync(env):
+    await run_qa(qa_loader())
+    r = env.store.rows[(COURSE, "sliding-window", QA)]
+    assert r.last_error is None and r.current_sync_id and r.chunk_count == 0
+
+
+@pytest.fixture
+def drop_env(env, monkeypatch):
+    async def get_collection(name):
+        return env.collections.get(name)
+
+    async def get_chunk_metadata(collection, where):
+        return [collection.items[i]["metadata"] for i in collection.matching(where)]
+
+    monkeypatch.setattr(clients, "get_collection", get_collection)
+    monkeypatch.setattr(clients, "get_chunk_metadata", get_chunk_metadata)
+    return env
+
+
+async def test_drop_qa_thread_removes_it_from_every_profile(drop_env):
+    env = drop_env
+    profiles = ("sliding-window", "type-tailored")
+    await run_qa(qa_loader(thread(), thread(qid=2, post_id=20)), profiles=profiles)
+
+    await ingestion.drop_qa_thread(COURSE, 1)
+
+    for profile in profiles:
+        items = collection(env, profile).items.values()
+        assert [i["metadata"]["question_id"] for i in items] == [2]
+        assert env.store.rows[(COURSE, profile, QA)].chunk_count == 1
+
+
+async def test_drop_qa_thread_leaves_other_sources_and_survives_errors(
+    drop_env, monkeypatch
+):
+    env = drop_env
+    await run(loader(page("Projects are 60% of the grade.")))
+    await run_qa(qa_loader(thread()))
+
+    async def broken(collection, where):
+        raise clients.ServiceUnavailable("chromadb", "down")
+
+    fake_delete = clients.delete_chunks
+    monkeypatch.setattr(clients, "delete_chunks", broken)
+    await ingestion.drop_qa_thread(COURSE, 1)  # logged, not raised
+    assert env.store.rows[(COURSE, "sliding-window", QA)].chunk_count == 1
+
+    monkeypatch.setattr(clients, "delete_chunks", fake_delete)
+    # Unknown thread, missing collections: nothing to do.
+    await ingestion.drop_qa_thread(COURSE, 99)
+    await ingestion.drop_qa_thread(COURSE + 1, 1)
+    assert row(env).chunk_count == 3
+
+
+# ── Uploads ──────────────────────────────────────────────────────────────────
+
+VIEW_URL = (
+    "https://git.example.edu/course/-/blob/main/eval/sample_data/web/syllabus.html"
+)
+
+
+def test_uploaded_page_links_to_where_people_view_it():
+    html = page("Projects are 60% and exams 40% of the grade.").encode()
+    (doc,) = ingestion.parse_upload("SYLLABUS", VIEW_URL, "syllabus.html", html)
+    assert doc.resource_type == "syllabus" and doc.key == VIEW_URL
+    first = doc.locate(
+        ingestion.Chunk(doc.sections[0].start, doc.sections[0].end, (), 1)
+    )
+    assert first["source_url"] == VIEW_URL
+    assert first["citation_url"].startswith(VIEW_URL + "#:~:text=")
+
+
+@pytest.mark.parametrize(
+    ("resource_type", "filename", "message"),
+    [
+        ("SYLLABUS", "notes.md", "single .html file"),
+        ("SCHEDULE", "pages.zip", "single .html file"),
+        ("REPO", "repo.md", "isn't supported yet"),
+    ],
+)
+def test_upload_must_fit_the_resource_type(resource_type, filename, message):
+    data = b"# Notes\n" if filename.endswith(".md") else zip_bytes({"a.md": b"# A"})
+    with pytest.raises(UploadError, match=message):
+        ingestion.parse_upload(resource_type, VIEW_URL, filename, data)
+
+
+def test_uploaded_page_without_content_is_refused():
+    with pytest.raises(FetchError, match="characters of text"):
+        ingestion.parse_upload(
+            "SCHEDULE", VIEW_URL, "schedule.html", b"<main><div id=weeks></div></main>"
+        )
+
+
+async def test_uploaded_documents_are_ingested_as_parsed(env):
+    docs = ingestion.parse_upload(
+        "SYLLABUS", VIEW_URL, "s.html", page("Projects are 60%.").encode()
+    )
+    await run(ingestion.documents_loader(docs))
+    assert row(env).chunk_count == 3
+    assert {i["metadata"]["source_url"] for i in collection(env).items.values()} == {
+        VIEW_URL
+    }

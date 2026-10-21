@@ -15,8 +15,10 @@ background task, which releases the claim when it ends:
         load=ingestion.web_page_loader(resource),
     )
 
-`load` returns the source's `Document`s. Web pages have a loader here;
-uploads, repos and historical Q&A only need to produce `Document`s too.
+`load` returns the source's `Document`s. Loaders here: `web_page_loader`
+(URL syllabus/schedule), `documents_loader` (uploads, parsed in the request
+by `parse_upload`) and `historical_qa_loader`. Repos only need to produce
+`Document`s too.
 
 For each requested profile, one at a time (to leave CPU for Ollama): chunk,
 embed, insert under a new `sync_id`, then switch `index_syncs.current_sync_id`
@@ -43,6 +45,7 @@ from sqlalchemy import select
 from ...config import settings
 from ...database import AsyncSessionLocal
 from ...models import IndexSync, Resource
+from ...models.resource import HISTORICAL_QA_SOURCE_KEY
 from . import clients, fetchers
 from .chunking import (
     HEADING_SEPARATOR,
@@ -55,7 +58,7 @@ from .chunking import (
     web_citation,
     web_sections,
 )
-from .profiles import CHUNKED_RESOURCE_TYPES, Profile, get_profile
+from .profiles import CHUNKED_RESOURCE_TYPES, PROFILES, Profile, get_profile
 
 logger = structlog.get_logger()
 
@@ -136,11 +139,92 @@ def web_page_loader(resource: Resource) -> Loader:
     return load
 
 
+def parse_upload(
+    resource_type: str, link_base_url: str, filename: str, data: bytes
+) -> list[Document]:
+    """
+    An uploaded file as `Document`s, checked and parsed in the request
+    (§7.2), so a bad upload is a 422 rather than a `last_error`. Raises
+    `fetchers.UploadError` (or `FetchError` for an empty page). CPU-bound;
+    run it with `asyncio.to_thread`, then pass the result to
+    `documents_loader`.
+    """
+    files = fetchers.read_upload(filename, data)
+    if resource_type in _WEB_TYPES:
+        html_types = (".html", ".htm")
+        if len(files) != 1 or not files[0].path.lower().endswith(html_types):
+            raise fetchers.UploadError(
+                "a syllabus or schedule upload must be a single .html file"
+            )
+        html = files[0].data.decode("utf-8", "replace")
+        return [web_document(html, link_base_url, _WEB_TYPES[resource_type])]
+    # REPO: markdown by section and PDFs by page come with repo ingestion,
+    # which turns the `.md`/`.pdf` files from read_upload into Documents.
+    raise fetchers.UploadError(f"uploading a {resource_type} isn't supported yet")
+
+
+def documents_loader(documents: list[Document]) -> Loader:
+    """For sources parsed before the task starts (uploads). Kept in memory
+    only, so a backend restart loses them and staff upload again (§7.2)."""
+
+    async def load() -> list[Document]:
+        return documents
+
+    return load
+
+
+HISTORICAL_QA_TITLE = "Past question"
+
+
+def qa_document(thread: fetchers.QAThread) -> Document:
+    """
+    One thread as one atomic section (§7.4). The title is the heading, so it
+    is embedded and labels the chunk ("Past question › {title}"), but not
+    stored: the stored text is the question body, a blank line, then the
+    accepted answer, which starts at `answer_start` so the prompt can tag the
+    two parts separately (§5.5).
+    """
+    text = f"{thread.question}\n\n{thread.answer}"
+    location = {
+        # Relative to either app's base; there is no citation_url (§3.1).
+        "source_url": f"/questions/{thread.question_id}",
+        "question_id": thread.question_id,
+        "accepted_post_id": thread.accepted_post_id,
+        "answer_start": len(thread.question) + 2,
+    }
+    return Document(
+        resource_type="historical_qa",
+        # Includes the post, so accepting a different answer with the same
+        # text still re-embeds (the stored accepted_post_id changes).
+        key=f"question:{thread.question_id}:answer:{thread.accepted_post_id}",
+        text=text,
+        sections=(Section(0, len(text), (thread.title,)),),
+        locate=lambda chunk: location,
+    )
+
+
+def historical_qa_loader(course_id: int) -> Loader:
+    """Reads the course's eligible threads when the task runs. Ingest with
+    `source_key=HISTORICAL_QA_SOURCE_KEY`, `resource_id=None` and
+    `title=HISTORICAL_QA_TITLE`."""
+
+    async def load() -> list[Document]:
+        async with AsyncSessionLocal() as db:
+            threads = await fetchers.read_historical_qa(db, course_id)
+        return [qa_document(t) for t in threads]
+
+    return load
+
+
 def content_hash(documents: Iterable[Document]) -> str:
     digest = hashlib.sha256(f"format:{INGEST_FORMAT}".encode())
     for d in sorted(documents, key=lambda d: (d.key, d.resource_type)):
         for part in (d.resource_type, d.key, d.text):
             digest.update(b"\0" + part.encode())
+        # Headings are embedded with each chunk (a Q&A thread's title is only
+        # there), so a changed heading must re-embed too.
+        for section in d.sections:
+            digest.update(b"\1" + HEADING_SEPARATOR.join(section.heading_path).encode())
     return digest.hexdigest()
 
 
@@ -534,3 +618,52 @@ def _error_text(exc: BaseException) -> str:
     else:
         text = f"{type(exc).__name__}: {exc}"
     return text[:1000]
+
+
+# ── Un-accept cleanup (§4.6) ─────────────────────────────────────────────────
+
+
+async def drop_qa_thread(course_id: int, question_id: int) -> None:
+    """
+    Background task after an accepted answer lost its acceptance: delete the
+    thread's historical Q&A chunks from every profile's collection and lower
+    `chunk_count` by the current ones. Only cleanup; the query-time check is
+    what stops the old answer being cited. `set_post_accepted` has already
+    cleared `content_hash` in the same commit, so the next re-index brings
+    the thread back. Never raises: a failure is logged and the next re-index
+    removes the chunks.
+    """
+    where = {
+        "$and": [
+            {"source_key": HISTORICAL_QA_SOURCE_KEY},
+            {"question_id": question_id},
+        ]
+    }
+    for profile in PROFILES.values():
+        log = logger.bind(
+            course_id=course_id, question_id=question_id, profile=profile.name
+        )
+        try:
+            collection = await clients.get_collection(
+                profile.collection_name(course_id)
+            )
+            if collection is None:
+                continue
+            found = await clients.get_chunk_metadata(collection, where)
+            if not found:
+                continue
+            await clients.delete_chunks(collection, where)
+            row = await store.get(course_id, profile.name, HISTORICAL_QA_SOURCE_KEY)
+            if row is None:
+                continue
+            current = sum(m.get("sync_id") == row.current_sync_id for m in found)
+            if current:
+                await store.save(
+                    course_id,
+                    profile.name,
+                    HISTORICAL_QA_SOURCE_KEY,
+                    None,
+                    chunk_count=max(row.chunk_count - current, 0),
+                )
+        except Exception:
+            log.warning("qa_thread_cleanup_failed", exc_info=True)

@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..common.exceptions import ConflictError, NotFoundError
 from ..models.course import Course
 from ..models.qa import Category, Post, Question, QuestionCategory
+from ..models.resource import HISTORICAL_QA_SOURCE_KEY, IndexSync
 from ..models.user import User
 from ..schemas.qa import CategoryCreate, CategoryUpdate, PostCreate, QuestionCreate
 
@@ -276,13 +277,35 @@ async def set_post_accepted(
     post_id: int,
     staff_user: User,
     is_accepted: bool,
-) -> Question:
+) -> tuple[Question, bool]:
+    """
+    Returns the question and whether a previously accepted answer lost its
+    acceptance. If one did, the caller must run
+    `ingestion.drop_qa_thread(course_id, question_id)` after committing
+    (docs/design-rag.md §4.6).
+    """
     question = await _get_question(db, course_id, question_id)
     target = next((p for p in question.posts if p.id == post_id), None)
     if not target:
         raise NotFoundError(f"Post {post_id} not found in question {question_id}")
     if target.kind != "ANSWER":
         raise ConflictError("Only ANSWER posts can be marked accepted")
+
+    unaccepted = any(
+        p.is_accepted and (p.id != target.id or not is_accepted) for p in question.posts
+    )
+    if unaccepted:
+        # In this commit, not after the ChromaDB cleanup: otherwise the next
+        # Q&A re-index could see an unchanged hash, skip re-embedding, and
+        # never bring the thread back after its chunks are dropped (§4.6).
+        await db.execute(
+            update(IndexSync)
+            .where(
+                IndexSync.course_id == course_id,
+                IndexSync.source_key == HISTORICAL_QA_SOURCE_KEY,
+            )
+            .values(content_hash=None)
+        )
 
     if is_accepted:
         # At most one accepted post per question.
@@ -306,7 +329,7 @@ async def set_post_accepted(
         post_id=post_id,
         is_accepted=is_accepted,
     )
-    return await _get_question(db, course_id, question_id)
+    return await _get_question(db, course_id, question_id), unaccepted
 
 
 # ---------------------------------------------------------------------------
