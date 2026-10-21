@@ -194,6 +194,7 @@ async def test_chunk_metadata_and_embedded_text(env):
     assert chunk_id == f"{SOURCE}:{sync_id}:0"
     assert item["document"] == "Projects are 60% and exams 40% of the grade."
     assert meta["label"] == "Course syllabus › Syllabus › Grading"
+    # The page's h1 is only dropped from the label when it repeats the title.
     assert meta["heading_path"] == "Syllabus › Grading"
     assert meta["source_url"] == PAGE
     assert meta["citation_url"].startswith(PAGE + "#:~:text=")
@@ -528,3 +529,46 @@ async def test_uploaded_documents_are_ingested_as_parsed(env):
     assert {i["metadata"]["source_url"] for i in collection(env).items.values()} == {
         VIEW_URL
     }
+
+
+# ── Labels ───────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("title", "heading_path", "label"),
+    [
+        ("Syllabus", ("Syllabus", "Grading"), "Syllabus › Grading"),
+        ("syllabus ", ("Syllabus",), "syllabus "),
+        (
+            "Course syllabus",
+            ("Syllabus", "Grading"),
+            "Course syllabus › Syllabus › Grading",
+        ),
+        ("Schedule", ("Week 6", "Schedule"), "Schedule › Week 6 › Schedule"),
+        ("Syllabus", (), "Syllabus"),
+    ],
+)
+def test_label_drops_a_first_heading_that_repeats_the_title(title, heading_path, label):
+    assert ingestion._label(title, heading_path) == label
+
+
+async def test_repeated_title_is_left_out_of_the_label_only(env):
+    await run(loader(page("Projects are 60% of the grade.")))
+    # Same page, resource titled like its h1.
+    await ingestion.claim(COURSE, "resource:4")
+    await ingestion.ingest(
+        course_id=COURSE,
+        source_key="resource:4",
+        resource_id=4,
+        title="Syllabus",
+        profiles=["sliding-window"],
+        load=loader(page("Projects are 60% of the grade.")),
+    )
+    meta = next(
+        i["metadata"]
+        for i in collection(env).items.values()
+        if i["metadata"]["source_key"] == "resource:4"
+        and i["metadata"]["chunk_index"] == 0
+    )
+    assert meta["label"] == "Syllabus › Grading"
+    assert meta["heading_path"] == "Syllabus › Grading"

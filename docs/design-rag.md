@@ -197,7 +197,7 @@ Every chunk stored in ChromaDB carries:
 |---|---|
 | `source_url` | The document, with **no location**. Returned by `/rag/compare`; the harness checks `expected_source in source_url`. |
 | `citation_url` | `source_url` plus the location. This is what AI posts link to. |
-| `label` | Human-readable: `"{resource title} › {heading path}"`, shown under the citation. |
+| `label` | Human-readable: `"{resource title} › {heading path}"`, shown under the citation. A first heading equal to the title (a page's `<h1>` is often its title) is left out of the label, so it reads "Syllabus › Grading", not "Syllabus › Syllabus › Grading"; `heading_path` and the embedded text keep it. |
 | `resource_id`, `resource_type`, `sync_id` | Ownership and versioning (§7). |
 
 ChromaDB metadata values must be `str`, `int`, `float` or `bool`: no `None` and
@@ -933,9 +933,15 @@ PROFILES = {
     "sliding-window": MiniLM, one sliding window for every type      # baseline
     "type-tailored":  MiniLM, per-type fallback chunkers              # axis 1
     "embedding-alt":  gte-Qwen2-1.5B-instruct (last-token pooling), sliding window   # axis 2
-    optional "embedding-cls": bge-small-en-v1.5 (CLS pooling), sliding window
+    "embedding-cls":  bge-small-en-v1.5 (CLS pooling), sliding window   # axis 2, second model
 }
 ```
+
+`embedding-cls` was optional until 2026-10-20, when we decided to add it;
+bge-small also goes into Infinity's model list (Compose and the VM's `.env`). It gives axis 2 a second data point at a different
+pooling strategy for little memory. Its query instruction ("Represent this
+sentence for searching relevant passages: ", none on passages) and revision
+`5c38ec7…` come from the model card at that revision.
 
 Starting sizes (provisional, tuned locally before T6, then frozen by the CI
 test below): sliding window `chunk_size` 200 word-pieces, `chunk_overlap` 40.

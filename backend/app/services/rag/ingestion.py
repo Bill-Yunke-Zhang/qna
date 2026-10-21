@@ -65,7 +65,8 @@ logger = structlog.get_logger()
 # Bump when what gets embedded or stored per chunk changes without the
 # profile changing (e.g. the heading line below). It is part of the content
 # hash, so the next sync re-embeds instead of skipping as "unchanged".
-INGEST_FORMAT = 1
+# 2: labels drop a first heading equal to the resource title.
+INGEST_FORMAT = 2
 
 # Chunks added to ChromaDB per request.
 _ADD_BATCH = 100
@@ -515,7 +516,7 @@ def _build_records(
             _Record(
                 text=text,
                 embed_text=embed_text,
-                label=HEADING_SEPARATOR.join(p for p in (title, heading) if p),
+                label=_label(title, chunk.heading_path),
                 resource_type=doc.resource_type,
                 token_count=chunk.token_count,
                 # +2 for the [CLS]/[SEP]-style special tokens.
@@ -524,6 +525,22 @@ def _build_records(
             )
         )
     return records
+
+
+def _label(title: str, heading_path: Sequence[str]) -> str:
+    """
+    "{resource title} › {heading path}" (§3.1). A page's top heading is often
+    the resource title itself ("Syllabus › Syllabus › Grading"), so a first
+    heading equal to the title is left out of the label only; it is still
+    embedded and stored as `heading_path`.
+    """
+    path = list(heading_path)
+    if (
+        path
+        and " ".join(path[0].split()).casefold() == " ".join(title.split()).casefold()
+    ):
+        path = path[1:]
+    return HEADING_SEPARATOR.join(p for p in (title, heading_path_label(path)) if p)
 
 
 async def _chunk(profile: Profile, doc: Document) -> list[Chunk]:

@@ -11,6 +11,7 @@ value. Add a new profile with a new name and ingest it into a new collection.
 If you added a profile, add its line here. Either way the change needs the
 other teammate's approval in review (§10).
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -21,6 +22,7 @@ PINNED_DEFINITION_HASHES = {
     "sliding-window": "32add4d0e3d75b80",
     "type-tailored": "65cea5df4246259e",
     "embedding-alt": "3f00f174b1420b40",
+    "embedding-cls": "60da3e724a00c3f9",
 }
 
 
@@ -72,12 +74,13 @@ def test_chunker_kind_is_part_of_the_hash():
     assert dataclasses.replace(base, chunkers=pdf_per_page).hash() != base.hash()
 
 
-def test_embedding_alt_differs_from_baseline_only_in_the_embedding_model():
+@pytest.mark.parametrize("name", ["embedding-alt", "embedding-cls"])
+def test_embedding_profiles_differ_from_baseline_only_in_the_embedding_model(name):
     # Axis 2 must hold chunking fixed, or it compares two things at once.
     from app.services.rag.profiles import get_profile
 
     baseline = get_profile("sliding-window")
-    alt = get_profile("embedding-alt")
+    alt = get_profile(name)
 
     assert alt.chunkers == baseline.chunkers
     assert alt.embedding_model != baseline.embedding_model
