@@ -23,10 +23,11 @@ has to be made in each app.
 
 | Where | Staff app |
 |---|---|
-| `lib/api.ts` | Sends **`X-App-Surface: staff`**. This grants nothing by itself. The backend still uses the caller's real course role, and the header can only ever clamp a role down to `STUDENT`. A student who opens this app is still a student and gets 403 on staff-only actions. |
-| `App.tsx` | Header shows "Course Q&A — Staff" with nav links **Questions** and **Categories**, and adds the `/categories` route. |
+| `lib/api.ts` | Sends **`X-App-Surface: staff`**. This grants nothing by itself. The backend still uses the caller's real course role, and the header can only ever clamp a role down to `STUDENT`. A student who opens this app is still a student and gets 403 on staff-only actions. Also has `postForm`/`putForm` for multipart uploads (a `FormData` body sets its own `Content-Type`), and shows schema validation errors (422 `detail`) as their messages. |
+| `App.tsx` | Header shows "Course Q&A — Staff" with nav links **Questions**, **Categories** and **Resources**, and adds the `/categories` and `/resources` routes. The header wraps on narrow screens. |
 | `pages/QuestionDetailPage.tsx` | Adds staff controls (below). The reply form defaults to **Answer**, not Follow-up. |
 | `pages/CategoriesPage.tsx` | New page (below). |
+| `pages/ResourcesPage.tsx`, `lib/resources.ts` | New page (below) and its types, kept out of `types.ts` (which mirrors the student app). |
 | `pages/AskQuestionPage.tsx` | Same form. The "no categories yet" hint points staff at the Categories page. |
 
 ## Routes
@@ -38,6 +39,7 @@ has to be made in each app.
 | `/questions/new` | Ask a question as staff | `POST /courses/{id}/questions` |
 | `/questions/:questionId` | Thread with staff controls | `GET .../questions/{qid}`, `POST .../posts`, `PATCH .../posts/{pid}/accept`, `POST .../close`, `POST .../reopen` |
 | `/categories` | List, create and delete the course's categories | `GET`/`POST /courses/{id}/categories`, `DELETE /courses/{id}/categories/{cid}` |
+| `/resources` | Course material for RAG: add, re-sync, replace, delete, re-index Q&A | `GET`/`POST /courses/{id}/resources`, `POST …/resources/upload`, `POST …/resources/{rid}/sync`, `PUT …/resources/{rid}/upload`, `DELETE …/resources/{rid}`, `POST …/historical-qa/sync` |
 
 ### Staff controls on a thread (`QuestionDetailPage.tsx`)
 
@@ -61,6 +63,33 @@ Create a category (name and optional description) or delete one. The backend
 also supports renaming (`PATCH /courses/{id}/categories/{cid}`), but this page
 doesn't use it. A question needs at least one category, so a new course needs
 at least one category before anyone can ask a question.
+
+### Resources (`ResourcesPage.tsx`)
+
+The staff side of RAG ingestion (`docs/design-rag.md` §7.5). Every action is
+accepted with 202 and runs in the background on the server.
+
+- **Add a resource** from a URL (syllabus or schedule page; a repository needs
+  a branch) or by uploading a file. An upload asks "Where can people view
+  this?", which becomes `link_base_url`: the file isn't stored, and AI
+  citations link there (§3.2).
+- **Profile picker** on every add, re-sync, replace and re-index. Adding
+  defaults to the live profile. The others default to every profile the
+  source is already ingested under, so its profiles stay on the same version.
+- Each resource shows its **per-profile sync status** (`last_synced_at`,
+  `chunk_count`, truncated chunks, `last_error`), a **Syncing** badge, and
+  **Versions differ** when its profiles hold different versions.
+- **Re-sync** is for URL resources. **Replace upload** is for uploads: it keeps
+  the resource's id and sync rows, so searches never see a gap. **Delete**
+  asks first, then removes the resource's chunks from every profile.
+- **Past Q&A** re-indexes threads with a verified human answer.
+- **Polling:** while any source is syncing, the page reloads every 5 s, for up
+  to 15 minutes; after that it says "No result yet. Check back or re-sync."
+  It uses the backend's `syncing` flag rather than comparing timestamps with
+  the server's clock. A sync stays "Syncing" for about 30 s after its rows
+  update, while the old chunks are cleaned up (`CLEANUP_GRACE_S`).
+- Times come from the server as UTC without a zone; `formatTimestamp` adds
+  the `Z` before showing them in local time.
 
 ## Things to know
 
