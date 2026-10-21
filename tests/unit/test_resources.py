@@ -383,6 +383,7 @@ async def test_url_resources_cannot_take_an_upload(client):
 
 async def test_delete_removes_chunks_and_row(client, fake_db, monkeypatch):
     from app.services.rag import clients
+    from app.services.rag.profiles import PROFILES
 
     rid = await make_url_resource(client)
     deleted = []
@@ -400,11 +401,11 @@ async def test_delete_removes_chunks_and_row(client, fake_db, monkeypatch):
     assert r.status_code == 204
     assert rid not in fake_db.resources
     assert {w["source_key"] for _, w in deleted} == {f"resource:{rid}"}
+    # Every profile's collection, including ones added later.
     assert {c for c, _ in deleted} == {
-        f"course_{COURSE}__sliding-window",
-        f"course_{COURSE}__type-tailored",
-        f"course_{COURSE}__embedding-alt",
+        p.collection_name(COURSE) for p in PROFILES.values()
     }
+    assert f"course_{COURSE}__sliding-window" in {c for c, _ in deleted}
 
 
 async def test_delete_still_works_with_chromadb_down(client, fake_db, monkeypatch):
