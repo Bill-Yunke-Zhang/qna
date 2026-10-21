@@ -76,12 +76,13 @@ A future AI-answer feature would most likely add fields to `PostResponse` /
 you do, update the matching serializer in `services/qa_service.py`, because
 these response models are filled from dicts, not ORM objects.
 
-AI-generated posts (`docs/design-rag.md` §4.1–4.2): migration `002_rag`
-added `AI` to `post_author_role` and made `Post.author_user_id` nullable for
-AI posts only. **The schemas don't handle them yet.** `PostResponse.author`
-still requires an `AuthorSummary`, and `qa_service.serialize_post` still calls
-`author_summary(post.author)`, so a thread containing an AI post would fail to
-serialize. No code creates AI posts yet. Before any does, `author` becomes
-`AuthorSummary | None`, `PostResponse` gains `citations`, and the frontends'
-`author_role` and `author` types change to match (see
-[`../../../frontend/student/README.md`](../../../frontend/student/README.md)).
+AI-generated posts (`docs/design-rag.md` §4): `PostResponse.author` is
+`AuthorSummary | None` (AI posts have no author user), and `PostResponse`
+carries `citations`, `retracted_at` and `retracted_by`. `Citation` is the
+shape of one saved source (§3.1): a `historical_qa` citation has
+`question_id` and no `citation_url`, every other type the reverse.
+`AICitations` adds the list rules (1–3, ranked 1..n best first). They are
+checked in `services/ai_answer_service.create_ai_post`, the only code that
+writes an AI post, not by MySQL. `QuestionSummary.has_ai_answer` and
+`post_count` ignore retracted posts. The frontends' `types.ts` mirror all of
+this.

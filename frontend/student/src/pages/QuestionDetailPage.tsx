@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Lock } from 'lucide-react';
+import { Link, useLocation, useParams } from 'react-router-dom';
+import { ArrowLeft, CheckCircle2, Loader2, Lock } from 'lucide-react';
 import { api } from '../lib/api';
 import { useCourse } from '../lib/CourseContext';
 import type { QuestionDetail } from '../lib/types';
@@ -8,26 +8,65 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Textarea } from '../components/ui/textarea';
 import { Badge } from '../components/ui/badge';
+import { AiCitations } from '../components/AiCitations';
+
+// After asking, poll for the AI answer every 5 s for ~3 minutes: twice the
+// slowest live answer (docs/design-rag.md §4.5). Never computed from
+// created_at, which the browser would misread as local time.
+const POLL_INTERVAL_MS = 5000;
+const POLL_ATTEMPTS = 36;
 
 export default function QuestionDetailPage() {
   const { courseId } = useCourse();
   const { questionId } = useParams();
+  const location = useLocation();
+  const justAsked = Boolean((location.state as { justAsked?: boolean } | null)?.justAsked);
   const [question, setQuestion] = useState<QuestionDetail | null>(null);
   const [kind, setKind] = useState<'ANSWER' | 'FOLLOWUP'>('FOLLOWUP');
   const [body, setBody] = useState('');
   const [error, setError] = useState('');
   const [posting, setPosting] = useState(false);
+  const [polling, setPolling] = useState(false);
 
   async function load() {
-    if (!courseId) return;
+    if (!courseId) return null;
     const data = await api.get<QuestionDetail>(`/courses/${courseId}/questions/${questionId}`);
     setQuestion(data);
+    return data;
   }
 
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId, questionId]);
+
+  // Only right after asking (AskQuestionPage passes { justAsked: true });
+  // opening the thread later from the list doesn't poll.
+  useEffect(() => {
+    if (!courseId || !justAsked) return;
+    let attempts = 0;
+    let stopped = false;
+    setPolling(true);
+    const timer = window.setInterval(async () => {
+      attempts += 1;
+      try {
+        const data = await load();
+        if (stopped) return;
+        if (data?.posts.some((p) => p.author_role === 'AI') || attempts >= POLL_ATTEMPTS) {
+          stopped = true;
+          window.clearInterval(timer);
+          setPolling(false);
+        }
+      } catch {
+        // A failed poll is retried on the next tick.
+      }
+    }, POLL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courseId, questionId, justAsked]);
 
   async function handlePost(e: React.FormEvent) {
     e.preventDefault();
@@ -84,10 +123,16 @@ export default function QuestionDetailPage() {
             <CardContent className="pt-6">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-slate-100">{post.author.display_name}</span>
-                  <Badge variant={post.author_role === 'STAFF' ? 'default' : 'outline'}>
-                    {post.author_role === 'STAFF' ? 'Course Staff' : 'Student'}
-                  </Badge>
+                  {post.author && (
+                    <span className="font-semibold text-slate-100">{post.author.display_name}</span>
+                  )}
+                  {post.author_role === 'AI' ? (
+                    <Badge variant="ai">AI-generated</Badge>
+                  ) : (
+                    <Badge variant={post.author_role === 'STAFF' ? 'default' : 'outline'}>
+                      {post.author_role === 'STAFF' ? 'Course Staff' : 'Student'}
+                    </Badge>
+                  )}
                   <Badge variant="outline">{post.kind === 'ANSWER' ? 'Answer' : 'Follow-up'}</Badge>
                 </div>
                 {post.is_accepted && (
@@ -97,9 +142,18 @@ export default function QuestionDetailPage() {
                 )}
               </div>
               <p className="text-slate-200 whitespace-pre-wrap">{post.body}</p>
+              {post.citations && post.citations.length > 0 && (
+                <AiCitations citations={post.citations} />
+              )}
             </CardContent>
           </Card>
         ))}
+        {polling && (
+          <p className="flex items-center gap-2 text-slate-400 text-sm" role="status">
+            <Loader2 size={14} className="animate-spin" />
+            If course materials cover this question, an AI answer will appear here shortly.
+          </p>
+        )}
       </div>
 
       {question.status === 'OPEN' ? (

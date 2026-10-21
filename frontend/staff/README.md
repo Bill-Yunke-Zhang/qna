@@ -78,8 +78,12 @@ at least one category before anyone can ask a question.
 - **AI answers are not pre-approved.** They are posted immediately, and
   staff accept one with the existing **Mark verified** button, the same path
   as any other answer. There is no separate approval flow to build here.
-- **The role badge** (`author_role === 'STAFF' ? 'Course Staff' : 'Student'`)
-  and the `author_role` type in `types.ts` need an AI case, as in the student
-  app. Otherwise AI posts show as "Student".
+- **AI answers** show an **AI-generated** badge, the "Top sources given to
+  the AI" block (`components/AiCitations.tsx`) and a **Retract** button
+  (`PATCH …/retract`, `docs/design-rag.md` §4.7). A retracted answer is a
+  collapsed "AI answer retracted by {name}" line that expands to the original.
+- `QuestionsPage.tsx` shows an **AI answered** badge and a filter for AI
+  answered threads with no verified answer, the ones staff still need to
+  check (§4.4). The staff thread page doesn't poll.
 - **Managing ingested course material** would be a new page next to
   `CategoriesPage.tsx`, with a nav link in `App.tsx`.

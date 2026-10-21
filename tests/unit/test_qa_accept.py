@@ -32,6 +32,7 @@ def post(post_id, accepted):
         is_accepted=accepted,
         accepted_by_user_id="staff" if accepted else None,
         accepted_at=None,
+        retracted_at=None,
     )
 
 

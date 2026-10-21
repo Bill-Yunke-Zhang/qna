@@ -286,3 +286,42 @@ class TestAccessControl:
             headers=_headers(outsider_token),
         )
         assert r.status_code == 404
+
+
+class TestAIPostFields:
+    """
+    AI posts themselves are written by a background task, not an endpoint,
+    so these check the HTTP surface around them (docs/design-rag.md §4).
+    """
+
+    def test_human_posts_carry_the_new_fields_and_cannot_be_retracted(
+        self, base_url, course_id, student_token, staff_token, category_id
+    ):
+        r = httpx.post(
+            f"{base_url}/api/courses/{course_id}/questions",
+            json={"title": "Retract me?", "body": "Body.", "category_ids": [category_id]},
+            headers=_headers(student_token),
+        )
+        assert r.status_code == 201, r.text
+        qid = r.json()["id"]
+        r = httpx.post(
+            f"{base_url}/api/courses/{course_id}/questions/{qid}/posts",
+            json={"kind": "ANSWER", "body": "Human answer."},
+            headers=_headers(staff_token),
+        )
+        post = r.json()["posts"][0]
+        assert post["citations"] is None
+        assert post["retracted_at"] is None and post["retracted_by"] is None
+
+        url = f"{base_url}/api/courses/{course_id}/questions/{qid}/posts/{post['id']}/retract"
+        # Staff only, and only AI posts.
+        r = httpx.patch(url, headers=_headers(student_token))
+        assert r.status_code == 403, r.text
+        r = httpx.patch(url, headers=_headers(staff_token))
+        assert r.status_code == 422, r.text
+
+        r = httpx.get(
+            f"{base_url}/api/courses/{course_id}/questions", headers=_headers(student_token)
+        )
+        listed = next(x for x in r.json() if x["id"] == qid)
+        assert listed["has_ai_answer"] is False and listed["post_count"] == 1
