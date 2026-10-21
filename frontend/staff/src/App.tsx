@@ -1,11 +1,12 @@
 import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useNavigate } from 'react-router-dom';
-import { LogOut, MessageSquare, Tags } from 'lucide-react';
+import { Library, LogOut, MessageSquare, Tags } from 'lucide-react';
 import { CourseProvider, useCourse } from './lib/CourseContext';
 import LoginPage from './pages/LoginPage';
 import QuestionsPage from './pages/QuestionsPage';
 import AskQuestionPage from './pages/AskQuestionPage';
 import QuestionDetailPage from './pages/QuestionDetailPage';
 import CategoriesPage from './pages/CategoriesPage';
+import ResourcesPage from './pages/ResourcesPage';
 
 function RequireAuth() {
   const token = localStorage.getItem('token');
@@ -29,8 +30,8 @@ function Layout() {
   return (
     <div className="min-h-screen">
       <header className="border-b border-slate-700 bg-slate-900">
-        <div className="max-w-3xl mx-auto px-8 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-6">
+        <div className="max-w-3xl mx-auto px-8 py-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <span className="flex items-center gap-2 text-slate-100 font-bold">
               <MessageSquare size={20} /> Course Q&amp;A — Staff
             </span>
@@ -40,6 +41,9 @@ function Layout() {
               </NavLink>
               <NavLink to="/categories" className={linkClass}>
                 <Tags size={14} /> Categories
+              </NavLink>
+              <NavLink to="/resources" className={linkClass}>
+                <Library size={14} /> Resources
               </NavLink>
             </nav>
           </div>
@@ -86,6 +90,7 @@ export default function App() {
               <Route path="/questions/new" element={<AskQuestionPage />} />
               <Route path="/questions/:questionId" element={<QuestionDetailPage />} />
               <Route path="/categories" element={<CategoriesPage />} />
+              <Route path="/resources" element={<ResourcesPage />} />
             </Route>
           </Route>
           <Route path="*" element={<Navigate to="/questions" replace />} />
