@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     WEB_FETCH_MAX_BYTES: int = 5_000_000
     WEB_FETCH_MAX_REDIRECTS: int = 5
 
+    # After a sync switches to its new chunks, how long to keep the old ones
+    # so queries that read the previous sync_id can finish (§7.3).
+    CLEANUP_GRACE_S: float = 30.0
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]

@@ -223,6 +223,51 @@ async def get_collection(name: str) -> Any | None:
         raise ServiceUnavailable("chromadb", _describe(exc)) from exc
 
 
+async def get_or_create_collection(name: str, metadata: dict[str, Any]) -> Any:
+    """
+    The collection named `name`, created with cosine distance and `metadata`
+    if it doesn't exist. An existing collection keeps its own metadata; the
+    caller compares it (ingestion checks the stored profile hash, §6.2).
+    """
+    existing = await get_collection(name)
+    if existing is not None:
+        return existing
+    client = await chroma()
+    try:
+        return await client.create_collection(
+            name,
+            metadata=metadata,
+            configuration={"hnsw": {"space": "cosine"}},
+            # Vectors always come from Infinity; never let Chroma embed.
+            embedding_function=None,
+            get_or_create=True,  # another sync may have just created it
+        )
+    except Exception as exc:
+        raise ServiceUnavailable("chromadb", _describe(exc)) from exc
+
+
+async def add_chunks(
+    collection: Any,
+    ids: list[str],
+    embeddings: list[list[float]],
+    documents: list[str],
+    metadatas: list[dict[str, Any]],
+) -> None:
+    try:
+        await collection.add(
+            ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas
+        )
+    except Exception as exc:
+        raise ServiceUnavailable("chromadb", _describe(exc)) from exc
+
+
+async def delete_chunks(collection: Any, where: dict[str, Any]) -> None:
+    try:
+        await collection.delete(where=where)
+    except Exception as exc:
+        raise ServiceUnavailable("chromadb", _describe(exc)) from exc
+
+
 def _is_not_found(exc: Exception) -> bool:
     name = type(exc).__name__
     return name in ("NotFoundError", "InvalidCollectionException") or (
