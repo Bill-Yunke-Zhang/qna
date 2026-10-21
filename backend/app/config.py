@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     UPLOAD_MAX_ENTRY_BYTES: int = 50 * 1024 * 1024
     UPLOAD_MAX_UNCOMPRESSED_BYTES: int = 200 * 1024 * 1024
 
+    # The ingestion profile live answering uses (§6.3); also the default for
+    # a newly registered source.
+    RAG_LIVE_PROFILE: str = "sliding-window"
+
+    # The only host repository URLs may point at, and the only host the
+    # GitLab access token is ever sent to (§8).
+    GITLAB_HOST: str = "git.doit.wisc.edu"
+
     # After a sync switches to its new chunks, how long to keep the old ones
     # so queries that read the previous sync_id can finish (§7.3).
     CLEANUP_GRACE_S: float = 30.0
