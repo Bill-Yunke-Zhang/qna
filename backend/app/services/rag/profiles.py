@@ -164,6 +164,11 @@ _GTE_QWEN2_QUERY_PREFIX = (
     "Instruct: Given a web search query, retrieve relevant passages that answer "
     "the query\nQuery: "
 )
+_BGE_SMALL = "BAAI/bge-small-en-v1.5"
+_BGE_SMALL_REVISION = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+# From the model card at that revision: the instruction goes on retrieval
+# queries only, never on passages.
+_BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
 # Provisional starting size (§6.2): tuned locally before T6, then frozen.
 # MiniLM truncates at 256 word-pieces; 200 leaves room for a document prefix.
@@ -215,6 +220,17 @@ _PROFILE_LIST = (
         embedding_model=_GTE_QWEN2,
         embedding_revision=_GTE_QWEN2_REVISION,
         query_prefix=_GTE_QWEN2_QUERY_PREFIX,
+        document_prefix="",
+        chunkers={t: _BASELINE_WINDOW for t in CHUNKED_RESOURCE_TYPES},
+    ),
+    # Axis 2, a second data point: a small model with CLS pooling (MiniLM
+    # mean-pools, gte-Qwen2 uses the last token), same chunking as the
+    # baseline.
+    Profile(
+        name="embedding-cls",
+        embedding_model=_BGE_SMALL,
+        embedding_revision=_BGE_SMALL_REVISION,
+        query_prefix=_BGE_QUERY_PREFIX,
         document_prefix="",
         chunkers={t: _BASELINE_WINDOW for t in CHUNKED_RESOURCE_TYPES},
     ),
