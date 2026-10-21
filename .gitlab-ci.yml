@@ -2,6 +2,8 @@ stages:
   - lint
   - test
   - secret-detection
+  - build
+  - deploy
 
 variables:
   SECRET_DETECTION_ENABLED: 'true'
@@ -65,3 +67,66 @@ sast:
 
 secret_detection:
   stage: secret-detection
+
+# ── Build and deploy (deployment_instructions.md Parts 6–7, T9) ───────────────
+#
+# Both run only on the protected production branch, which only moves by a
+# reviewed main -> production MR. The deploy signs in to Google Cloud with
+# GitLab's short-lived OIDC token through Workload Identity Federation (Part
+# 5), whose condition also only accepts protected production: no stored
+# credentials. Production secrets stay in /srv/app/.env on the VM.
+
+build_and_push:
+  stage: build
+  # mirror.gcr.io is Google's public mirror of Docker Hub. Every team's jobs run on the
+  # same course runner, and Docker Hub limits anonymous pulls per IP address, so pulling
+  # from the mirror keeps a busy deadline night from failing with "toomanyrequests".
+  image: mirror.gcr.io/library/docker:27.5-cli
+  services:
+    - name: mirror.gcr.io/library/docker:27.5-dind
+      alias: docker
+      # Also send the FROM lines in your Dockerfiles to the mirror first
+      command: ["--registry-mirror=https://mirror.gcr.io"]
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+  rules:
+    - if: $CI_COMMIT_BRANCH == "production"
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" -u "$CI_REGISTRY_USER" --password-stdin
+
+    - docker build -f nginx/Dockerfile -t "$CI_REGISTRY_IMAGE/nginx:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY_IMAGE/nginx:$CI_COMMIT_SHORT_SHA"
+
+    - docker build -t "$CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA" ./backend
+    - docker push "$CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA"
+
+deploy_full_stack:
+  stage: deploy
+  image: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+  rules:
+    - if: $CI_COMMIT_BRANCH == "production"
+  needs:
+    - build_and_push
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://git.doit.wisc.edu
+  variables:
+    # From Part 5, in Bill's project qna-yyzhang. None of these are secrets.
+    CLOUDSDK_CORE_PROJECT: qna-yyzhang
+    WIF_PROVIDER: projects/904981855911/locations/global/workloadIdentityPools/gitlab/providers/gitlab
+    DEPLOY_SA: gitlab-deployer@qna-yyzhang.iam.gserviceaccount.com
+  before_script:
+    - echo "$GITLAB_OIDC_TOKEN" > .oidc_token
+    - gcloud iam workload-identity-pools create-cred-config "$WIF_PROVIDER" --service-account="$DEPLOY_SA" --credential-source-file=.oidc_token --output-file=.gcp_creds.json
+    - gcloud auth login --cred-file=.gcp_creds.json
+  script:
+    # docker-compose.prod.yml references the two images above by tag — copy it and the tag to the VM
+    - gcloud compute scp docker-compose.prod.yml production-web-server:docker-compose.yml --zone us-central1-a --tunnel-through-iap --quiet
+    - >
+      echo "$CI_REGISTRY_PASSWORD" | gcloud compute ssh production-web-server --zone us-central1-a --tunnel-through-iap --quiet --command "
+      sudo mv docker-compose.yml /srv/app/ &&
+      sudo docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin &&
+      sudo CI_REGISTRY_IMAGE=$CI_REGISTRY_IMAGE IMAGE_TAG=$CI_COMMIT_SHORT_SHA sh -c 'cd /srv/app && docker compose pull && docker compose up -d --remove-orphans' &&
+      sudo docker logout $CI_REGISTRY &&
+      sudo docker image prune -af"
