@@ -267,6 +267,48 @@ async def test_register_repo_must_be_on_gitlab_host(client):
     assert "git.doit.wisc.edu" in r.json()["message"]
 
 
+async def test_register_repo_by_url(client, fake_db, ingested):
+    r = await client.post(
+        f"{base()}/resources",
+        json=url_resource(
+            type="REPO",
+            title="Course repo",
+            repo_branch="main",
+            fetch_url="https://git.doit.wisc.edu/course/repo/-/tree/main",
+        ),
+    )
+    assert r.status_code == 202, r.text
+    # Stored as the project URL, whatever page of it was pasted.
+    assert r.json()["fetch_url"] == "https://git.doit.wisc.edu/course/repo"
+    assert r.json()["repo_branch"] == "main"
+    [call] = ingested
+    assert call["load"].__qualname__.startswith("repo_loader")
+
+    rid = r.json()["id"]
+    r = await client.post(f"{base()}/resources/{rid}/sync", json={})
+    assert r.status_code == 202, r.text
+    assert ingested[1]["load"].__qualname__.startswith("repo_loader")
+
+
+@pytest.mark.parametrize(
+    ("fetch_url", "branch"),
+    [
+        ("http://git.doit.wisc.edu/course/repo", "main"),  # not https
+        ("https://git.doit.wisc.edu/repo", "main"),  # not a project
+        ("https://git.doit.wisc.edu/course/repo", "--upload-pack=x"),
+    ],
+)
+async def test_register_repo_refuses_bad_urls_and_branches(
+    client, fake_db, fetch_url, branch
+):
+    r = await client.post(
+        f"{base()}/resources",
+        json=url_resource(type="REPO", repo_branch=branch, fetch_url=fetch_url),
+    )
+    assert r.status_code == 422
+    assert fake_db.resources == {}
+
+
 async def test_register_in_missing_course_is_404(client):
     r = await client.post(f"{base(999)}/resources", json=url_resource())
     assert r.status_code == 404
