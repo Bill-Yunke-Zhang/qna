@@ -112,7 +112,9 @@ async def update_category(
     _: Annotated[CourseMember, Depends(require_course_staff)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    return await qa_service.update_category(db, course_id, category_id, body)
+    category = await qa_service.update_category(db, course_id, category_id, body)
+    await db.commit()
+    return category
 
 
 @router.delete("/courses/{course_id}/categories/{category_id}", status_code=204)
@@ -123,6 +125,7 @@ async def delete_category(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
     await qa_service.delete_category(db, course_id, category_id)
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------
