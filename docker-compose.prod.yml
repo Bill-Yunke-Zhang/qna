@@ -1,0 +1,149 @@
+# Production stack on the VM (deployment_instructions.md Part 7).
+#
+# Runs the images CI built and pushed (CI_REGISTRY_IMAGE and IMAGE_TAG are
+# exported by the deploy job), never builds from source. Secrets come from
+# /srv/app/.env on the VM, which docker compose reads from its working
+# directory; nothing secret is in this file, CI or git.
+#
+# Only nginx publishes a port. Every data store and model server has a named
+# volume, so a redeploy keeps ingested collections and downloaded models
+# (docs/design-rag.md §10: the deployment must stay harness-ready).
+
+services:
+  nginx:
+    image: ${CI_REGISTRY_IMAGE}/nginx:${IMAGE_TAG}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - qna_network
+
+  backend:
+    image: ${CI_REGISTRY_IMAGE}/backend:${IMAGE_TAG}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Never development here: it lets anyone sign in as any NetID.
+      - APP_ENV=production
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - qna_network
+    # Migrations first, or a fresh database waits forever for a schema.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: qna
+      MYSQL_USER: app_user
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - qna_network
+    healthcheck:
+      # 127.0.0.1 forces TCP. On a fresh volume the image first runs a
+      # temporary server that only listens on the socket, so "localhost"
+      # passed too early and the backend's migrations failed (2 restarts).
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "app_user", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 45s
+
+  redis:
+    image: redis:7.0-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy allkeys-lru
+
+  # --- RAG services (docs/design-rag.md §5.1) ---
+  # Same images and settings as docker-compose.yml, with no published ports.
+  # The backend doesn't depend_on them: a slow model download must not keep
+  # the board down.
+
+  ollama:
+    image: ollama/ollama:0.35.1
+    restart: unless-stopped
+    environment:
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: "-1"
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  infinity:
+    image: michaelf34/infinity:0.0.77-cpu
+    restart: unless-stopped
+    environment:
+      # Every profile's model must always be loaded on the deployment
+      # (§10), so the default here is all three, each at its pinned
+      # revision (profiles.py). The VM's .env can override both.
+      INFINITY_MODEL_ID: ${INFINITY_MODEL_ID:-sentence-transformers/all-MiniLM-L6-v2;Alibaba-NLP/gte-Qwen2-1.5B-instruct;BAAI/bge-small-en-v1.5}
+      INFINITY_REVISION: ${INFINITY_REVISION:-1110a243fdf4706b3f48f1d95db1a4f5529b4d41;a9af15a6372d7d6b25e9fb07c2ccb9e1fe645644;5c38ec7c405ec4b44b94cc5a9bb96e735b38267a}
+      INFINITY_BATCH_SIZE: ${INFINITY_BATCH_SIZE:-16}
+      # torch, not the cpu image's ONNX default: gte-Qwen2 needs its own
+      # last-token pooling config applied (axis 2).
+      INFINITY_ENGINE: ${INFINITY_ENGINE:-torch}
+      INFINITY_PORT: "7997"
+    command: ["v2"]
+    volumes:
+      - infinity_cache:/app/.cache
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7997/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+
+  chromadb:
+    image: chromadb/chroma:1.5.9
+    restart: unless-stopped
+    volumes:
+      - chroma_data:/data
+    networks:
+      - qna_network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/8000 && printf \"GET /api/v2/heartbeat HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  mysql_data:
+  redis_data:
+  ollama_models:
+  infinity_cache:
+  chroma_data:
+
+networks:
+  qna_network:
+    driver: bridge
