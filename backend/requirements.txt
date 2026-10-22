@@ -24,3 +24,5 @@ chromadb-client==1.5.9
 tokenizers==0.23.3
 # Text per page from repo PDFs (docs/design-rag.md §7.4)
 pypdf==6.20.1
+# VM-wide CPU use for the compare endpoint's metrics (docs/design-rag.md §5.3)
+psutil==7.0.0
