@@ -1259,6 +1259,20 @@ see both versions).
   `.md` split by section with line numbers kept; `.pdf` text extracted per page,
   then the fallback chunker with `page_start`/`page_end` tracked. Record
   `commit_sha` (`git rev-parse HEAD`).
+  *As built (2026-10-22, `repo_documents`):* markdown sections come from ATX
+  headings (`#`…`######`), never from lines inside fenced code blocks;
+  setext headings aren't recognized. Every repo chunk's heading path starts
+  with the file path, so it is embedded and labels the chunk ("Course repo ›
+  p2-buzzer/instructions.md › Setup") and equal headings in different files
+  stay apart; the stored `heading_path` metadata is the markdown headings
+  only. A PDF is one passage for every chunker except `PerPage`, which keeps
+  its pages apart, so the baseline window runs across slides as §6.2 says.
+  PDF text comes from `pypdf`; a damaged or encrypted PDF fails the upload
+  with 422. The same code serves repo zip uploads (and a single `.md` or
+  `.pdf`), where `{base}` is the upload's `link_base_url`. On the eval repo:
+  99 chunks under `sliding-window`, 195 under `type-tailored` (19 PDF pages
+  → 19 chunks), and every markdown chunk's line range checked against the
+  file.
 - **Historical Q&A:** read the course's threads that have an accepted answer
   with `author_role != 'AI'`; one chunk per thread: question title and body plus
   the accepted answer. Label `"Past question › {title}"`.
