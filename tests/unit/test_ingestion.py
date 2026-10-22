@@ -504,7 +504,8 @@ def test_uploaded_page_links_to_where_people_view_it():
     [
         ("SYLLABUS", "notes.md", "single .html file"),
         ("SCHEDULE", "pages.zip", "single .html file"),
-        ("REPO", "repo.md", "isn't supported yet"),
+        ("REPO", "page.html", "must be a .zip, .md or .pdf"),
+        ("REPO", "repo.md", "have no text"),
     ],
 )
 def test_upload_must_fit_the_resource_type(resource_type, filename, message):

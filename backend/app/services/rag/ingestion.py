@@ -17,8 +17,8 @@ background task, which releases the claim when it ends:
 
 `load` returns the source's `Document`s. Loaders here: `web_page_loader`
 (URL syllabus/schedule), `documents_loader` (uploads, parsed in the request
-by `parse_upload`) and `historical_qa_loader`. Repos only need to produce
-`Document`s too.
+by `parse_upload`, including repo zips via `repo_documents`) and
+`historical_qa_loader`.
 
 For each requested profile, one at a time (to leave CPU for Ollama): chunk,
 embed, insert under a new `sync_id`, then switch `index_syncs.current_sync_id`
@@ -54,7 +54,11 @@ from .chunking import (
     count_tokens,
     finish_chunks,
     heading_path_label,
+    markdown_citation,
+    markdown_sections,
+    pdf_citation,
     plan_chunks,
+    sections_for,
     web_citation,
     web_sections,
 )
@@ -159,9 +163,90 @@ def parse_upload(
             )
         html = files[0].data.decode("utf-8", "replace")
         return [web_document(html, link_base_url, _WEB_TYPES[resource_type])]
-    # REPO: markdown by section and PDFs by page come with repo ingestion,
-    # which turns the `.md`/`.pdf` files from read_upload into Documents.
-    raise fetchers.UploadError(f"uploading a {resource_type} isn't supported yet")
+    if resource_type == "REPO":
+        if not any(f.path.lower().endswith(fetchers.ZIP_MEMBER_TYPES) for f in files):
+            raise fetchers.UploadError(
+                "a repository upload must be a .zip, .md or .pdf file"
+            )
+        documents = repo_documents(files, link_base_url)
+        if not documents:
+            raise fetchers.UploadError("the upload's .md and .pdf files have no text")
+        return documents
+    raise fetchers.UploadError(f"uploading a {resource_type} isn't supported")
+
+
+def repo_documents(
+    files: Sequence[fetchers.UploadedFile],
+    base_url: str,
+    commit_sha: str | None = None,
+) -> list[Document]:
+    """
+    A repo's `.md` and `.pdf` files as `repo_markdown` and `repo_pdf`
+    documents (§7.4); anything else is skipped. `base_url` is where the files
+    are viewed: a zip's `link_base_url`, or a clone's `.../-/blob/{branch}`.
+    Files with no text are left out. Raises `FetchError` for an unreadable
+    PDF. CPU-bound; run it in a thread.
+    """
+    documents = []
+    for file in sorted(files, key=lambda f: f.path):
+        lower = file.path.lower()
+        if lower.endswith(".md"):
+            doc = markdown_document(file, base_url, commit_sha)
+        elif lower.endswith(".pdf"):
+            doc = pdf_document(file, base_url, commit_sha)
+        else:
+            continue
+        if doc.sections:
+            documents.append(doc)
+    return documents
+
+
+def markdown_document(
+    file: fetchers.UploadedFile, base_url: str, commit_sha: str | None = None
+) -> Document:
+    """
+    Split by heading (`markdown_sections`). The file path heads every
+    section's heading path, so it is embedded and labels the chunk
+    ("{title} › p2-buzzer/instructions.md › Setup"), and so different files'
+    identical headings stay apart.
+    """
+    text = file.data.decode("utf-8", "replace").replace("\r\n", "\n")
+    path = file.path
+    sections = tuple(
+        Section(s.start, s.end, (path, *s.heading_path))
+        for s in markdown_sections(text)
+    )
+    return Document(
+        resource_type="repo_markdown",
+        key=path,
+        text=text,
+        sections=sections,
+        locate=lambda chunk: markdown_citation(base_url, path, text, chunk, commit_sha),
+    )
+
+
+def pdf_document(
+    file: fetchers.UploadedFile, base_url: str, commit_sha: str | None = None
+) -> Document:
+    """One section per page with text; `sections_for` merges them for every
+    chunker but `PerPage`."""
+    pdf = fetchers.parse_pdf(file.path, file.data)
+    path = file.path
+    ends = [*pdf.page_starts[1:], len(pdf.text) + 2]
+    sections = tuple(
+        Section(start, end - 2, (path,))
+        for start, end in zip(pdf.page_starts, ends, strict=True)
+        if pdf.text[start : end - 2].strip()
+    )
+    return Document(
+        resource_type="repo_pdf",
+        key=path,
+        text=pdf.text,
+        sections=sections,
+        locate=lambda chunk: pdf_citation(
+            base_url, path, pdf.page_starts, chunk, commit_sha
+        ),
+    )
 
 
 def documents_loader(documents: list[Document]) -> Loader:
@@ -557,7 +642,8 @@ async def _chunk(profile: Profile, doc: Document) -> list[Chunk]:
             for s in doc.sections
         ]
     chunker = profile.chunker_for(doc.resource_type)
-    plan = await asyncio.to_thread(plan_chunks, doc.text, doc.sections, chunker)
+    sections = sections_for(chunker, doc.resource_type, doc.sections)
+    plan = await asyncio.to_thread(plan_chunks, doc.text, sections, chunker)
     vectors: list[list[float]] = []
     if plan.units_to_embed:
         vectors = await clients.embed(

@@ -32,6 +32,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from pypdf import PdfReader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -614,6 +615,53 @@ def _read_entry(
     ):
         raise UploadError(f"could not read {path} from the zip") from None
     return bytes(body)
+
+
+# ── PDFs ─────────────────────────────────────────────────────────────────────
+
+# Slide decks and handouts are tens of pages; this only bounds the CPU a
+# hostile file can take (its size is already capped by the upload limits).
+PDF_MAX_PAGES = 500
+
+
+@dataclass(frozen=True)
+class PdfText:
+    """A PDF's text, its pages joined by a blank line. Page i+1 starts at
+    `page_starts[i]`."""
+
+    text: str
+    page_starts: tuple[int, ...]
+
+
+def parse_pdf(path: str, data: bytes) -> PdfText:
+    """
+    Text per page (§7.4), for `repo_pdf` chunks with page numbers. Raises
+    `FetchError` for a PDF that can't be read, is encrypted, or is too long.
+    A page with no extractable text (a picture) is kept empty, so later page
+    numbers stay right. CPU-bound; run it in a thread.
+    """
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise FetchError(f"{path} is encrypted")
+        if len(reader.pages) > PDF_MAX_PAGES:
+            raise FetchError(f"{path} has more than {PDF_MAX_PAGES} pages")
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except FetchError:
+        raise
+    # pypdf raises many kinds of errors on a damaged file.
+    except Exception:
+        raise FetchError(f"could not read {path} as a PDF") from None
+
+    parts: list[str] = []
+    starts: list[int] = []
+    offset = 0
+    for page in pages:
+        page = page.replace("\r\n", "\n").replace("\x00", "")
+        starts.append(offset)
+        parts.append(page)
+        offset += len(page) + 2
+    return PdfText("\n\n".join(parts), tuple(starts))
 
 
 # ── Historical Q&A ───────────────────────────────────────────────────────────
