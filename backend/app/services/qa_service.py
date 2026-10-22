@@ -7,7 +7,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ..common.exceptions import ConflictError, NotFoundError
+from ..common.exceptions import ConflictError, InvalidInputError, NotFoundError
 from ..models.course import Course
 from ..models.qa import Category, Post, Question, QuestionCategory
 from ..models.resource import HISTORICAL_QA_SOURCE_KEY, IndexSync
@@ -29,7 +29,8 @@ def serialize_post(post: Post) -> dict:
     return {
         "id": post.id,
         "question_id": post.question_id,
-        "author": author_summary(post.author),
+        # AI posts have no author user (docs/design-rag.md §4.1).
+        "author": author_summary(post.author) if post.author else None,
         "author_role": post.author_role,
         "kind": post.kind,
         "body": post.body,
@@ -37,10 +38,21 @@ def serialize_post(post: Post) -> dict:
         "accepted_by": author_summary(post.accepted_by) if post.accepted_by else None,
         "accepted_at": post.accepted_at,
         "created_at": post.created_at,
+        "citations": post.citations,
+        "retracted_at": post.retracted_at,
+        "retracted_by": (
+            author_summary(post.retracted_by) if post.retracted_by else None
+        ),
     }
 
 
+def _visible_posts(question: Question) -> list[Post]:
+    """Posts that count as replies: retracted AI posts don't (§4.7)."""
+    return [p for p in question.posts if p.retracted_at is None]
+
+
 def serialize_question_summary(question: Question) -> dict:
+    visible = _visible_posts(question)
     return {
         "id": question.id,
         "course_id": question.course_id,
@@ -48,14 +60,20 @@ def serialize_question_summary(question: Question) -> dict:
         "status": question.status,
         "author": author_summary(question.author),
         "categories": [link.category for link in question.category_links],
-        "post_count": len(question.posts),
+        "post_count": len(visible),
         "has_accepted_answer": any(p.is_accepted for p in question.posts),
+        "has_ai_answer": any(p.author_role == "AI" for p in visible),
         "created_at": question.created_at,
         "updated_at": question.updated_at,
     }
 
 
-def serialize_question_detail(question: Question) -> dict:
+def serialize_question_detail(question: Question, viewer_role: str) -> dict:
+    """
+    `viewer_role` is the caller's effective course role. Students don't see
+    retracted AI posts at all; staff get them, to show collapsed (§4.7).
+    """
+    posts = question.posts if viewer_role == "STAFF" else _visible_posts(question)
     return {
         "id": question.id,
         "course_id": question.course_id,
@@ -64,7 +82,7 @@ def serialize_question_detail(question: Question) -> dict:
         "status": question.status,
         "author": author_summary(question.author),
         "categories": [link.category for link in question.category_links],
-        "posts": [serialize_post(p) for p in question.posts],
+        "posts": [serialize_post(p) for p in posts],
         "closed_by": author_summary(question.closed_by) if question.closed_by else None,
         "closed_at": question.closed_at,
         "created_at": question.created_at,
@@ -79,6 +97,7 @@ def _question_load_options():
         selectinload(Question.category_links).selectinload(QuestionCategory.category),
         selectinload(Question.posts).selectinload(Post.author),
         selectinload(Question.posts).selectinload(Post.accepted_by),
+        selectinload(Question.posts).selectinload(Post.retracted_by),
     )
 
 
@@ -290,6 +309,9 @@ async def set_post_accepted(
         raise NotFoundError(f"Post {post_id} not found in question {question_id}")
     if target.kind != "ANSWER":
         raise ConflictError("Only ANSWER posts can be marked accepted")
+    if is_accepted and target.retracted_at is not None:
+        # Students can't see it, so it can't be their thread's answer.
+        raise ConflictError("A retracted AI answer can't be accepted")
 
     # Accepting un-accepts every other post; un-accepting only touches the
     # target, so another accepted answer in the thread stays accepted.
@@ -333,6 +355,37 @@ async def set_post_accepted(
         is_accepted=is_accepted,
     )
     return await _get_question(db, course_id, question_id), unaccepted
+
+
+async def retract_ai_post(
+    db: AsyncSession,
+    course_id: int,
+    question_id: int,
+    post_id: int,
+    staff_user: User,
+) -> Question:
+    """
+    Soft-hide a wrong AI answer (docs/design-rag.md §4.7): students stop
+    seeing it, staff see it collapsed, and it's un-accepted if it was
+    accepted. Only AI posts (422 otherwise). Retracting again changes nothing.
+    No historical Q&A cleanup is needed: threads whose accepted answer is
+    an AI post are never indexed (§4.6).
+    """
+    question = await _get_question(db, course_id, question_id)
+    target = next((p for p in question.posts if p.id == post_id), None)
+    if not target:
+        raise NotFoundError(f"Post {post_id} not found in question {question_id}")
+    if target.author_role != "AI":
+        raise InvalidInputError("Only AI answers can be retracted")
+    if target.retracted_at is None:
+        target.retracted_at = datetime.now(timezone.utc)
+        target.retracted_by_user_id = staff_user.id
+        target.is_accepted = False
+        target.accepted_by_user_id = None
+        target.accepted_at = None
+        await db.flush()
+        logger.info("ai_post_retracted", question_id=question_id, post_id=post_id)
+    return await _get_question(db, course_id, question_id)
 
 
 # ---------------------------------------------------------------------------

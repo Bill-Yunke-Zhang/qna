@@ -8,7 +8,8 @@ HTTP requests or responses.
 
 | File | What it owns | Called from |
 |---|---|---|
-| `qa_service.py` | Categories, questions, posts, accepting answers, closing and reopening threads, and the response serializers | `routers/qa.py` |
+| `qa_service.py` | Categories, questions, posts, accepting answers, retracting AI answers, closing and reopening threads, and the response serializers | `routers/qa.py` |
+| `ai_answer_service.py` | `create_ai_post`, the only code that writes an AI post (validates its citations); the pipeline's `answer_question` task comes with the pipeline | the AI answer task |
 | `auth_service.py` | Password hashing, JWT creation and decoding, user lookup and creation, roster-based access sync | `routers/auth.py`, `routers/admin.py`, `common/dependencies.py`, `bootstrap.py` |
 | `roster_service.py` | Student roster import (Canvas CSV or pre-mapped JSON rows) | `routers/admin.py` |
 | `staff_service.py` | Staff CSV import | `routers/admin.py` |
@@ -39,7 +40,13 @@ miss the new or changed post.
   course (404 listing the unknown ids).
 - `create_post` refuses a `CLOSED` thread (409). It stores the `author_role`
   the router passes in.
-- `set_post_accepted` only accepts `ANSWER` posts (409 for `FOLLOWUP`).
+- `serialize_question_detail(question, viewer_role)`: students never get
+  retracted AI posts; staff do, to show them collapsed (`docs/design-rag.md`
+  §4.7). Every router call passes the caller's effective role.
+- `retract_ai_post` only accepts AI posts (422 otherwise), un-accepts the post,
+  and changes nothing if it's already retracted.
+- `set_post_accepted` only accepts `ANSWER` posts (409 for `FOLLOWUP`, and
+  for a retracted AI post).
   Accepting one **un-accepts any other post** in the same question, so at most
   one answer is accepted. It records `accepted_by_user_id` and `accepted_at`.
   Un-accepting clears them. When an accepted answer loses acceptance it also

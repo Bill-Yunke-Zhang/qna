@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Search, CheckCircle2 } from 'lucide-react';
+import { Plus, Search, CheckCircle2, Sparkles } from 'lucide-react';
 import { api } from '../lib/api';
 import { useCourse } from '../lib/CourseContext';
 import type { Category, QuestionSummary } from '../lib/types';
@@ -15,6 +15,9 @@ export default function QuestionsPage() {
   const [categoryId, setCategoryId] = useState<string>('');
   const [status, setStatus] = useState<string>('');
   const [q, setQ] = useState('');
+  // AI answers are only checked by staff after posting, so make the
+  // unchecked ones easy to find (docs/design-rag.md §4.4).
+  const [aiUnverifiedOnly, setAiUnverifiedOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -36,6 +39,10 @@ export default function QuestionsPage() {
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load questions'))
       .finally(() => setLoading(false));
   }, [courseId, categoryId, status, q]);
+
+  const shown = aiUnverifiedOnly
+    ? questions.filter((x) => x.has_ai_answer && !x.has_accepted_answer)
+    : questions;
 
   if (!courseId) {
     return <p className="p-8 text-slate-400">You aren't enrolled in any course yet.</p>;
@@ -84,17 +91,25 @@ export default function QuestionsPage() {
           <option value="OPEN">Open</option>
           <option value="CLOSED">Closed</option>
         </select>
+        <select
+          value={aiUnverifiedOnly ? 'ai' : ''}
+          onChange={(e) => setAiUnverifiedOnly(e.target.value === 'ai')}
+          className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100"
+        >
+          <option value="">All answers</option>
+          <option value="ai">AI answered, not verified</option>
+        </select>
       </div>
 
       {error && <p className="text-red-400 mb-4 text-sm">{error}</p>}
 
       {loading ? (
         <p className="text-slate-400">Loading…</p>
-      ) : questions.length === 0 ? (
+      ) : shown.length === 0 ? (
         <p className="text-slate-400">No questions match your filters.</p>
       ) : (
         <div className="space-y-3">
-          {questions.map((question) => (
+          {shown.map((question) => (
             <Link key={question.id} to={`/questions/${question.id}`}>
               <Card className="px-6 py-4 hover:border-indigo-500 transition-colors">
                 <div className="flex items-start justify-between gap-4">
@@ -111,9 +126,16 @@ export default function QuestionsPage() {
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1.5 shrink-0">
-                    <Badge variant={question.status === 'OPEN' ? 'success' : 'outline'}>
-                      {question.status}
-                    </Badge>
+                    <div className="flex gap-1">
+                      {question.has_ai_answer && (
+                        <Badge variant="ai">
+                          <Sparkles size={12} className="mr-1" /> AI answered
+                        </Badge>
+                      )}
+                      <Badge variant={question.status === 'OPEN' ? 'success' : 'outline'}>
+                        {question.status}
+                      </Badge>
+                    </div>
                     <div className="flex gap-1 flex-wrap justify-end">
                       {question.categories.map((c) => (
                         <Badge key={c.id} variant="default">

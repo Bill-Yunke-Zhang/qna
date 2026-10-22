@@ -47,7 +47,8 @@ export default function AskQuestionPage() {
         body,
         category_ids: Array.from(selected),
       });
-      navigate(`/questions/${question.id}`);
+      // The thread page polls for an AI answer only after this (§4.5).
+      navigate(`/questions/${question.id}`, { state: { justAsked: true } });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to post question');
     } finally {

@@ -408,9 +408,11 @@ accepted answer. Removing a wrong answer is covered in §4.7.
 `{ justAsked: true }`. Only then does the thread page poll with the existing
 `load()`, every ~5 s, until an AI post appears or a fixed number of attempts
 (~36, i.e. ~3 minutes) runs out. Opening the thread later from the list doesn't
-poll. Reloading the page right after asking does poll again, because React
-Router keeps `location.state` in `history.state`, which survives a reload; that's
-harmless.
+poll. The thread page reads the flag once and then replaces the history
+entry without it. React Router keeps `location.state` in `history.state`,
+which survives a reload and Back, so otherwise a reload would poll again and
+show the message below for up to 3 minutes when no answer is coming
+*(found in Bill's review of !22)*.
 
 If the live backlog is long or a grading run has paused live answering (§5.3,
 §5.4), an answer can arrive after the polling window ends. The polling message

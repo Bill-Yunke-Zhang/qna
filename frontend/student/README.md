@@ -74,12 +74,17 @@ valid.
 
 ## Where a RAG feature would plug in
 
-`QuestionDetailPage.tsx` renders the posts and `types.ts` defines `Post`. An
-AI-generated answer with citations would need new fields there, and the
-matching backend schema in `backend/app/schemas/qa.py`.
-
-**The role badge is a two-way switch:** `post.author_role === 'STAFF' ? 'Course Staff' : 'Student'`.
-`types.ts` types `author_role` as `'STUDENT' | 'STAFF'`. A new AI role value
-would be shown as **"Student"** unless both are updated, and AI answers must
-be clearly labeled. The staff app has the same badge. `AskQuestionPage.tsx`
-is where a "similar questions / suggested answer before posting" step would go.
+AI answers (`docs/design-rag.md` §4.4–4.5) are wired in:
+- `types.ts`: `author_role` includes `'AI'`, `author` can be `null`, and
+  posts carry `citations`. An AI post shows an **AI-generated** badge (badge
+  variant `ai`) and no author name.
+- `components/AiCitations.tsx` shows "Top sources given to the AI" under an
+  AI answer. Document sources open their `citation_url` (only `http(s)`
+  links are rendered as links); past questions link to this app's
+  `/questions/{id}`. The staff app has its own copy.
+- `AskQuestionPage.tsx` navigates with `{ justAsked: true }`, and only then
+  does `QuestionDetailPage.tsx` poll every 5 s, up to 36 times, until an AI
+  post appears. The page clears that history state as soon as it reads it,
+  so a reload or Back doesn't poll again. Opening a thread from the list
+  doesn't poll.
+- Students never receive retracted AI answers, so there's nothing to hide here.

@@ -156,7 +156,7 @@ async def create_question(
 ):
     question = await qa_service.create_question(db, course_id, member.user, body)
     await db.commit()
-    return qa_service.serialize_question_detail(question)
+    return qa_service.serialize_question_detail(question, member.course_role)
 
 
 @router.get(
@@ -165,11 +165,11 @@ async def create_question(
 async def get_question(
     course_id: int,
     question_id: int,
-    _: Annotated[CourseMember, Depends(require_course_member)],
+    member: Annotated[CourseMember, Depends(require_course_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     question = await qa_service.get_question(db, course_id, question_id)
-    return qa_service.serialize_question_detail(question)
+    return qa_service.serialize_question_detail(question, member.course_role)
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +193,7 @@ async def create_post(
         db, course_id, question_id, member.user, member.course_role, body
     )
     await db.commit()
-    return qa_service.serialize_question_detail(question)
+    return qa_service.serialize_question_detail(question, member.course_role)
 
 
 @router.patch(
@@ -216,7 +216,25 @@ async def set_post_accepted(
     if unaccepted:
         # After the commit, so a ChromaDB failure can't undo the accept change.
         background_tasks.add_task(ingestion.drop_qa_thread, course_id, question_id)
-    return qa_service.serialize_question_detail(question)
+    return qa_service.serialize_question_detail(question, member.course_role)
+
+
+@router.patch(
+    "/courses/{course_id}/questions/{question_id}/posts/{post_id}/retract",
+    response_model=QuestionDetail,
+)
+async def retract_ai_post(
+    course_id: int,
+    question_id: int,
+    post_id: int,
+    member: Annotated[CourseMember, Depends(require_course_staff)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    question = await qa_service.retract_ai_post(
+        db, course_id, question_id, post_id, member.user
+    )
+    await db.commit()
+    return qa_service.serialize_question_detail(question, member.course_role)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +253,7 @@ async def close_question(
 ):
     question = await qa_service.close_question(db, course_id, question_id, member.user)
     await db.commit()
-    return qa_service.serialize_question_detail(question)
+    return qa_service.serialize_question_detail(question, member.course_role)
 
 
 @router.post(
@@ -249,4 +267,4 @@ async def reopen_question(
 ):
     question = await qa_service.reopen_question(db, course_id, question_id, member.user)
     await db.commit()
-    return qa_service.serialize_question_detail(question)
+    return qa_service.serialize_question_detail(question, member.course_role)
