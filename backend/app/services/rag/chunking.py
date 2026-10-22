@@ -4,8 +4,9 @@ Splitting documents into chunks (docs/design-rag.md §6.2, §7.3, §7.4).
 Two layers:
 
 1. **Structural splitting**, the same in every profile: a web page by
-   heading (`web_sections`). Markdown by section and PDFs by page come with
-   repo ingestion; they only need to produce `Section`s too.
+   heading (`web_sections`), markdown by section (`markdown_sections`). A
+   PDF has no structure, so it is one passage, except under `PerPage`,
+   which keeps its pages apart (`sections_for`).
 2. **The profile's fallback chunker**, applied only to a section larger than
    its size limit: `SlidingWindow`, `Semantic` or `PerPage` (profiles.py).
 
@@ -157,6 +158,68 @@ def _trimmed(
     while end > start and text[end - 1].isspace():
         end -= 1
     return Section(start, end, heading_path) if start < end else None
+
+
+# ── Structural splitting: markdown and PDFs ──────────────────────────────────
+
+# An ATX heading: up to 3 spaces, 1-6 #s, then a space or the end of the line.
+# The closing #s are optional and dropped.
+_MD_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$")
+_MD_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+
+
+def markdown_sections(text: str) -> list[Section]:
+    """
+    One section per ATX heading (`#` ... `######`), like `web_sections`: the
+    lines after the heading up to the next heading of any level, with the
+    path of headings above it. Lines inside fenced code blocks are never
+    headings (a `# comment` in a shell block). Setext headings (underlined
+    with `===`) aren't recognized; their text stays in the section.
+    """
+    sections = []
+    path: list[tuple[int, str]] = []
+    start = 0
+    fence = ""
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        line_start, offset = offset, offset + len(line)
+        body = line.rstrip("\r\n")
+        if fence:
+            if body.lstrip(" ").startswith(fence):
+                fence = ""
+            continue
+        if opened := _MD_FENCE.match(body):
+            fence = opened.group(1)[0] * 3
+            continue
+        heading = _MD_HEADING.match(body)
+        if not heading:
+            continue
+        section = _trimmed(text, start, line_start, tuple(t for _, t in path))
+        if section:
+            sections.append(section)
+        level = len(heading.group(1))
+        while path and path[-1][0] >= level:
+            path.pop()
+        if title := (heading.group(2) or "").strip():
+            path.append((level, title))
+        start = offset
+    section = _trimmed(text, start, len(text), tuple(t for _, t in path))
+    if section:
+        sections.append(section)
+    return sections
+
+
+def sections_for(
+    chunker: Chunker, resource_type: str, sections: Sequence[Section]
+) -> Sequence[Section]:
+    """
+    A PDF's sections are its pages. Only `PerPage` keeps them apart; every
+    other chunker sees the whole PDF as one passage, so the baseline window
+    runs across page boundaries (§6.2). Everything else is unchanged.
+    """
+    if resource_type != "repo_pdf" or isinstance(chunker, PerPage) or not sections:
+        return sections
+    return [Section(sections[0].start, sections[-1].end, sections[0].heading_path)]
 
 
 # ── Fallback chunkers ────────────────────────────────────────────────────────
@@ -415,4 +478,82 @@ def web_citation(page_url: str, doc: WebDocument, chunk: Chunk) -> dict[str, str
         location["fragment_prefix"] = prefix
     if chunk.heading_path:
         location["heading_path"] = heading_path_label(chunk.heading_path)
+    return location
+
+
+# ── Citations: repo files ────────────────────────────────────────────────────
+
+
+def repo_file_url(base_url: str, path: str) -> str:
+    """`{base}/{path}`, the file with no location (§3.1)."""
+    return f"{base_url.rstrip('/')}/{quote(path, safe='/')}"
+
+
+def raw_base_url(base_url: str) -> str:
+    """A GitLab blob base as its raw base; any other base is used as is."""
+    return base_url.replace("/-/blob/", "/-/raw/", 1)
+
+
+def _position(offsets: Sequence[int], index: int) -> int:
+    """1-based number of the line or page that starts at or before `index`."""
+    return bisect.bisect_right(offsets, index)
+
+
+def markdown_citation(
+    base_url: str,
+    path: str,
+    text: str,
+    chunk: Chunk,
+    commit_sha: str | None = None,
+) -> dict[str, str | int]:
+    """
+    `{base}/{path}?plain=1#L{start}-L{end}`: GitLab's line anchors only work
+    in the source view (§3.1). Lines are counted from the chunk's own first
+    and last character, so a window inside a long section gets its own range.
+    The chunk's heading path starts with the file path (it labels and is
+    embedded with the chunk); the stored `heading_path` is the markdown
+    headings after it.
+    """
+    line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
+    first = _position(line_starts, chunk.start)
+    last = _position(line_starts, max(chunk.start, chunk.end - 1))
+    source_url = repo_file_url(base_url, path)
+    anchor = f"L{first}" if first == last else f"L{first}-L{last}"
+    location: dict[str, str | int] = {
+        "source_url": source_url,
+        "citation_url": f"{source_url}?plain=1#{anchor}",
+        "file_path": path,
+        "line_start": first,
+        "line_end": last,
+    }
+    if headings := chunk.heading_path[1:]:
+        location["heading_path"] = heading_path_label(headings)
+    if commit_sha:
+        location["commit_sha"] = commit_sha
+    return location
+
+
+def pdf_citation(
+    base_url: str,
+    path: str,
+    page_starts: Sequence[int],
+    chunk: Chunk,
+    commit_sha: str | None = None,
+) -> dict[str, str | int]:
+    """
+    `{raw_base}/{path}#page={page_start}`: the browser's PDF viewer honors
+    `#page=` on the raw file, GitLab's viewer may not (§3.1).
+    `page_starts[i]` is the offset where page i+1 starts in the text.
+    """
+    first = _position(page_starts, chunk.start)
+    last = _position(page_starts, max(chunk.start, chunk.end - 1))
+    location: dict[str, str | int] = {
+        "source_url": repo_file_url(base_url, path),
+        "citation_url": f"{repo_file_url(raw_base_url(base_url), path)}#page={first}",
+        "file_path": path,
+        "page_start": first,
+        "page_end": last,
+    }
+    if commit_sha:
+        location["commit_sha"] = commit_sha
     return location
