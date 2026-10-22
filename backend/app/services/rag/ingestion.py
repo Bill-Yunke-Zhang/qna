@@ -16,9 +16,9 @@ background task, which releases the claim when it ends:
     )
 
 `load` returns the source's `Document`s. Loaders here: `web_page_loader`
-(URL syllabus/schedule), `documents_loader` (uploads, parsed in the request
-by `parse_upload`, including repo zips via `repo_documents`) and
-`historical_qa_loader`.
+(URL syllabus/schedule), `repo_loader` (URL repos, shallow-cloned),
+`documents_loader` (uploads, parsed in the request by `parse_upload`,
+including repo zips via `repo_documents`) and `historical_qa_loader`.
 
 For each requested profile, one at a time (to leave CPU for Ollama): chunk,
 embed, insert under a new `sync_id`, then switch `index_syncs.current_sync_id`
@@ -108,6 +108,8 @@ class Document:
     text: str
     sections: tuple[Section, ...]
     locate: Callable[[Chunk], dict[str, Any]]
+    # The repo commit the document was read from, if any; `ingest` stores it.
+    commit_sha: str | None = None
 
 
 Loader = Callable[[], Awaitable[list[Document]]]
@@ -222,6 +224,7 @@ def markdown_document(
         text=text,
         sections=sections,
         locate=lambda chunk: markdown_citation(base_url, path, text, chunk, commit_sha),
+        commit_sha=commit_sha,
     )
 
 
@@ -246,7 +249,34 @@ def pdf_document(
         locate=lambda chunk: pdf_citation(
             base_url, path, pdf.page_starts, chunk, commit_sha
         ),
+        commit_sha=commit_sha,
     )
+
+
+def repo_loader(resource: Resource) -> Loader:
+    """
+    Shallow-clones a URL-origin REPO resource when the task runs (§7.4).
+    Citations link to `{project}/-/blob/{branch}/{path}`, the branch rather
+    than the commit, so students see current content (§3.2).
+    """
+    if resource.origin != "URL" or resource.type != "REPO" or not resource.repo_branch:
+        raise ValueError(f"not a URL repository resource: {resource.type}")
+    project_url = fetchers.gitlab_project_url(resource.fetch_url)
+    branch = resource.repo_branch
+    base_url = fetchers.repo_blob_base(project_url, branch)
+
+    async def load() -> list[Document]:
+        repo = await fetchers.clone_repo(project_url, branch)
+        documents = await asyncio.to_thread(
+            repo_documents, repo.files, base_url, repo.commit_sha
+        )
+        if not documents:
+            raise fetchers.FetchError(
+                "the repository's .md and .pdf files have no text"
+            )
+        return documents
+
+    return load
 
 
 def documents_loader(documents: list[Document]) -> Loader:
@@ -424,6 +454,10 @@ async def ingest(
     try:
         try:
             documents = await load()
+            # A repo loader learns its commit only once it has cloned.
+            commit_sha = commit_sha or next(
+                (d.commit_sha for d in documents if d.commit_sha), None
+            )
         except Exception as exc:
             log.warning("ingest_load_failed", error=_error_text(exc), exc_info=True)
             for name in profiles:
