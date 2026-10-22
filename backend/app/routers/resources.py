@@ -78,7 +78,9 @@ async def register_resource(
     profiles = resource_service.resolve_profiles(
         body.profiles, [settings.RAG_LIVE_PROFILE]
     )
-    await resource_service.check_fetch_url(body.type, body.fetch_url)
+    fetch_url = await resource_service.check_fetch_url(
+        body.type, body.fetch_url, body.repo_branch
+    )
     resource = await resource_service.create_resource(
         db,
         course_id,
@@ -86,7 +88,7 @@ async def register_resource(
         resource_type=body.type,
         title=body.title,
         origin="URL",
-        fetch_url=body.fetch_url,
+        fetch_url=fetch_url,
         repo_branch=body.repo_branch,
     )
     await db.commit()
@@ -97,7 +99,7 @@ async def register_resource(
         resource_id=resource.id,
         title=resource.title,
         profiles=profiles,
-        load=ingestion.web_page_loader(resource),
+        load=resource_service.sync_loader(resource),
     )
     return await _accepted(db, resource)
 
@@ -156,8 +158,6 @@ async def resync_resource(
     resource = await resource_service.get_resource(db, course_id, resource_id)
     if resource.origin != "URL":
         raise ConflictError("This resource was uploaded; upload a new file instead")
-    if resource.type == "REPO":
-        raise InvalidInputError("re-syncing a repository by URL isn't supported yet")
     default = await resource_service.default_profiles(
         db, course_id, resource.source_key
     )
@@ -169,7 +169,7 @@ async def resync_resource(
         resource_id=resource.id,
         title=resource.title,
         profiles=profiles,
-        load=ingestion.web_page_loader(resource),
+        load=resource_service.sync_loader(resource),
     )
     return await _accepted(db, resource)
 
