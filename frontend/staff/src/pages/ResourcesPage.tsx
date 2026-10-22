@@ -355,7 +355,7 @@ function AddResourceCard({
                 key={fileKey}
                 type="file"
                 aria-label="File"
-                accept={type === 'REPO' ? '.zip' : '.html,.htm'}
+                accept={type === 'REPO' ? '.zip,.md,.pdf' : '.html,.htm'}
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                 className={fileClass}
                 required
@@ -518,7 +518,7 @@ function ResourceCard({
             <input
               type="file"
               aria-label="New file"
-              accept={resource.type === 'REPO' ? '.zip' : '.html,.htm'}
+              accept={resource.type === 'REPO' ? '.zip,.md,.pdf' : '.html,.htm'}
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               className={fileClass}
               required
