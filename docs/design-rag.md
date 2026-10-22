@@ -1325,6 +1325,25 @@ for up to ~15 minutes; then it says "No result yet. Check back or re-sync."
   - The clone has a timeout (e.g. 120 s), runs with `GIT_LFS_SKIP_SMUDGE=1`, and
     is aborted if the checkout exceeds a size cap (e.g. 500 MB). `--depth 1`
     alone doesn't limit a huge repo.
+  - *As built (2026-10-22, `fetchers.clone_repo`):* there is no checkout at
+    all. The clone is `--depth=1 --single-branch --no-tags --no-checkout
+    --filter=blob:none`; `git ls-tree -r -l` lists the commit's files with
+    their sizes, and only the `.md`/`.pdf` blobs are read (`git cat-file`).
+    Nothing is written to a working tree, so no symlink or `..` path can
+    point outside it; symlinks (mode 120000) and submodules are skipped. A
+    huge repo costs only its tree listing, and the zip-upload limits apply
+    (file count, per-file and total size, from the tree's sizes before
+    reading). `REPO_CLONE_TIMEOUT_S` (120 s) covers the whole operation. git
+    runs with a clean environment (no system or user config, no prompts, no
+    credential helper), so the backend's own secrets aren't in its
+    environment. The header is `Authorization: Basic base64(oauth2:TOKEN)`.
+    The stored `fetch_url` is the project URL whatever page of it was pasted,
+    the branch is checked against a conservative pattern (no leading `-`),
+    and a private repo without a working token fails with "GitLab refused
+    access" in `last_error`. Checked live on 2026-10-22 against the public
+    `aicoding/fa26/handouts` repo (96/123 chunks, commit SHA recorded,
+    markdown line ranges and the raw PDF link verified) and our private repo
+    with no token (fails in ~3 s, no prompt).
 - **URL fetching** runs on a VM next to MySQL, Redis, Ollama and the GCP
   metadata server (`169.254.169.254`, which hands out the VM's credentials).
   Allow only `http(s)`, refuse private, loopback and link-local addresses after
