@@ -70,6 +70,12 @@ class Settings(BaseSettings):
     # The only host repository URLs may point at, and the only host the
     # GitLab access token is ever sent to (§8).
     GITLAB_HOST: str = "git.doit.wisc.edu"
+    # Read-only (read_repository) token for cloning course repos on
+    # GITLAB_HOST; sent only there, as an HTTP header (design-rag §8).
+    # Empty: public repos only.
+    GITLAB_ACCESS_TOKEN: str = ""
+    # The whole clone, listing and reading of one repo.
+    REPO_CLONE_TIMEOUT_S: float = 120.0
 
     # After a sync switches to its new chunks, how long to keep the old ones
     # so queries that read the previous sync_id can finish (§7.3).

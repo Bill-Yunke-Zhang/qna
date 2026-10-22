@@ -2,11 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for asyncmy (MySQL C extension) and cryptography (for python-jose)
+# System deps for asyncmy (MySQL C extension) and cryptography (for python-jose);
+# git shallow-clones course repos registered by URL (docs/design-rag.md §7.4)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     default-libmysqlclient-dev \
     pkg-config \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
