@@ -40,6 +40,21 @@ export interface ResourceList {
   historical_qa: SourceStatus;
 }
 
+// GET /courses/{id}/rag/health (docs/design-rag.md §5.1, §10). The page only
+// reads `live`; the rest is for the deploy and grading checklists.
+export interface RagHealth {
+  ok: boolean;
+  problems: string[];
+  live: {
+    ok: boolean;
+    enabled: boolean;
+    profile: string;
+    model: string;
+    threshold: number;
+    problems: string[];
+  };
+}
+
 export const RESOURCE_TYPE_LABELS: Record<ResourceType, string> = {
   SYLLABUS: 'Syllabus',
   SCHEDULE: 'Schedule',

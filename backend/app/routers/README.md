@@ -126,6 +126,15 @@ explicit, never a quiet `matched: false`:
 A generation that runs out of the time budget (`RAG_COMPARE_BUDGET_S`) is
 returned as a `200` with the partial answer, and logged.
 
+`GET /{course_id}/rag/health` (staff) says whether the course can answer
+right now: `ok` plus a list of `problems` in plain words, always `200`. It
+checks the three services, the live profile and model, and any eval profiles
+and generation models named in `?profiles=` / `?generation_models=`
+(comma-separated, from `eval/configs.json`). Wait for `"ok": true` after
+starting the VM, after every deploy and before a grading window
+(`docs/design-rag.md` §10). The staff Resources page shows `live.problems`
+as an "AI answers are off for this course" banner.
+
 ## Adding a router
 
 1. Create `APIRouter(prefix=..., tags=[...])` in a new file here.

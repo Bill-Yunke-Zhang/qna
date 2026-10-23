@@ -14,7 +14,7 @@ import time
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..common.dependencies import CourseMember, require_course_staff
@@ -27,7 +27,7 @@ from ..common.exceptions import (
 from ..database import get_db
 from ..schemas.rag import CompareRequest, CompareResponse
 from ..services import resource_service
-from ..services.rag import clients, compare, pipeline
+from ..services.rag import clients, compare, health, pipeline
 
 logger = structlog.get_logger()
 
@@ -108,3 +108,27 @@ async def compare_configuration(
             "cpu_percent": cpu.percent(),
         },
     }
+
+
+@router.get("/health")
+async def rag_health(
+    course_id: int,
+    _: Staff,
+    db: Db,
+    profiles: Annotated[str | None, Query(max_length=500)] = None,
+    generation_models: Annotated[str | None, Query(max_length=500)] = None,
+) -> dict:
+    """
+    Whether the course can answer right now (§10): `ok` is the "green" the
+    deploy and grading checklists wait for. Name the eval profiles and models
+    from eval/configs.json, comma-separated, to check them too; the live
+    ones are always checked. Always 200: problems are in the body.
+    """
+    await resource_service.require_course(db, course_id)
+    return await health.course_health(
+        db,
+        course_id,
+        profiles=resource_service.parse_profiles_field(profiles) or [],
+        generation_models=resource_service.parse_profiles_field(generation_models)
+        or [],
+    )

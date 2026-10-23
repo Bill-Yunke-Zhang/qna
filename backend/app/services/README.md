@@ -193,6 +193,11 @@ RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
   request (`CpuWindow`), and a record of compare traffic (`tracking`,
   `active_or_ended_within`) that live answering checks against
   `RAG_COMPARE_QUIET_S` to pause during a harness run.
+- `rag/health.py`: `course_health`, behind `GET …/rag/health`. Never raises;
+  each thing a live answer or a harness run needs that's missing (a service,
+  a collection, a matching profile hash, a loaded embedding model, a pulled
+  generation model, indexed Q&A, a clean last sync, one version per source)
+  becomes a line in `problems`.
 
 Follow the
 same rules: take an `AsyncSession`, flush without committing, raise
