@@ -71,6 +71,7 @@ export default function QuestionsPage() {
           />
         </div>
         <select
+          aria-label="Filter by category"
           value={categoryId}
           onChange={(e) => setCategoryId(e.target.value)}
           className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"
@@ -83,6 +84,7 @@ export default function QuestionsPage() {
           ))}
         </select>
         <select
+          aria-label="Filter by status"
           value={status}
           onChange={(e) => setStatus(e.target.value)}
           className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"
@@ -92,6 +94,7 @@ export default function QuestionsPage() {
           <option value="CLOSED">Closed</option>
         </select>
         <select
+          aria-label="Filter by AI answers"
           value={aiUnverifiedOnly ? 'ai' : ''}
           onChange={(e) => setAiUnverifiedOnly(e.target.value === 'ai')}
           className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"

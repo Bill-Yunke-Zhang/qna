@@ -89,7 +89,12 @@ export default function CategoriesPage() {
               <p className="font-semibold text-ink">{c.name}</p>
               {c.description && <p className="text-ink-muted text-sm">{c.description}</p>}
             </div>
-            <Button variant="outline" size="sm" onClick={() => handleDelete(c.id)}>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={`Delete ${c.name}`}
+              onClick={() => handleDelete(c.id)}
+            >
               <Trash2 size={14} />
             </Button>
           </Card>

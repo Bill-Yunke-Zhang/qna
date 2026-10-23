@@ -157,7 +157,12 @@ export default function CoursesPage() {
                 <p className="text-ink-muted text-sm">{c.semester}</p>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => startEdit(c)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Edit ${c.name}`}
+                  onClick={() => startEdit(c)}
+                >
                   <Pencil size={14} />
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => navigate(`/courses/${c.id}/roster`)}>
