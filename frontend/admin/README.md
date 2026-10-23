@@ -26,8 +26,10 @@ src/
   App.tsx               Router, RequireAdmin guard, sidebar (Courses, Users, Logout)
   lib/api.ts            fetch wrapper (Bearer token) + postForm() for multipart CSV uploads
   lib/utils.ts          cn()
-  index.css             Tailwind directives and global styles (with tailwind.config.ts at the app root,
-                        where a theme/colour-token layer would go)
+  index.css             The semantic color tokens for the light and dark themes (T8), plus
+                        global styles; tailwind.config.ts maps them to Tailwind colors
+  lib/theme.ts          useTheme(): the current theme, saved choice or OS preference
+  components/ThemeToggle.tsx  The sun/moon button in the header and on the login page
   components/ui/        badge, button, card, input, textarea
   pages/
     LoginPage.tsx       username/password only (no dev netid login)

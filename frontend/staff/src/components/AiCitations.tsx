@@ -7,8 +7,8 @@ import type { Citation } from '../lib/types';
 // claims no more than that; the first is tagged "best match".
 export function AiCitations({ citations }: { citations: Citation[] }) {
   return (
-    <div className="mt-4 border-t border-slate-700 pt-3">
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">
+    <div className="mt-4 border-t border-line pt-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted mb-2">
         Top sources given to the AI
       </p>
       <ol className="space-y-1.5">
@@ -16,7 +16,7 @@ export function AiCitations({ citations }: { citations: Citation[] }) {
           <li key={c.rank} className="flex items-center gap-2 text-sm">
             <CitationLink citation={c} />
             {c.rank === 1 && (
-              <span className="rounded-full bg-violet-600/20 px-2 py-0.5 text-xs text-violet-300">
+              <span className="rounded-full bg-ai-soft px-2 py-0.5 text-xs text-ai-ink">
                 best match
               </span>
             )}
@@ -28,7 +28,7 @@ export function AiCitations({ citations }: { citations: Citation[] }) {
 }
 
 function CitationLink({ citation }: { citation: Citation }) {
-  const className = 'inline-flex items-center gap-1.5 text-indigo-300 hover:text-indigo-200 underline';
+  const className = 'inline-flex items-center gap-1.5 text-accent-ink hover:text-ink underline';
   if (citation.resource_type === 'historical_qa' && citation.question_id) {
     // Relative to this app, so each app opens its own thread page.
     return (
@@ -39,7 +39,7 @@ function CitationLink({ citation }: { citation: Citation }) {
   }
   const url = citation.citation_url ?? '';
   if (!/^https?:\/\//i.test(url)) {
-    return <span className="text-slate-300">{citation.label}</span>;
+    return <span className="text-ink-secondary">{citation.label}</span>;
   }
   return (
     <a href={url} target="_blank" rel="noopener noreferrer" className={className}>

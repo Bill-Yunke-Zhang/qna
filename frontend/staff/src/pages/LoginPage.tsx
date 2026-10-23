@@ -5,6 +5,7 @@ import { useCourse } from '../lib/CourseContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Card, CardContent, CardHeader } from '../components/ui/card';
+import { ThemeToggle } from '../components/ThemeToggle';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -55,11 +56,12 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
+      <ThemeToggle className="fixed right-4 top-4" />
       <div className="w-full max-w-sm space-y-4">
         <Card>
           <CardHeader>
-            <h1 className="text-2xl font-bold text-slate-100">Staff Login</h1>
-            <p className="text-slate-400 text-sm mt-1">Course Q&amp;A</p>
+            <h1 className="text-2xl font-bold text-ink">Staff Login</h1>
+            <p className="text-ink-muted text-sm mt-1">Course Q&amp;A</p>
           </CardHeader>
           <CardContent>
             <form onSubmit={handlePasswordLogin} className="space-y-4">
@@ -78,7 +80,7 @@ export default function LoginPage() {
                 autoComplete="current-password"
                 required
               />
-              {error && <p className="text-red-400 text-sm">{error}</p>}
+              {error && <p className="text-danger-ink text-sm">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Signing in…' : 'Sign In'}
               </Button>
@@ -88,7 +90,7 @@ export default function LoginPage() {
 
         <Card>
           <CardContent className="pt-6">
-            <p className="text-slate-400 text-xs mb-3">
+            <p className="text-ink-muted text-xs mb-3">
               Development only — stands in for campus SSO until an OAuth2 proxy is deployed in
               front of this service.
             </p>

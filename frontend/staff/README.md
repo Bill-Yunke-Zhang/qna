@@ -99,8 +99,13 @@ accepted with 202 and runs in the background on the server.
   403 from `require_course_staff`. A global admin sees every course as `STAFF`.
 - Auth handling is the same as the student app: the token is kept in
   `localStorage`, there is no refresh, and logout only clears local state.
-- Styling lives in this app's own `src/index.css` and `tailwind.config.ts`
-  (each app has its own copy). A theme/colour-token layer would be added there.
+- **Theming (T8)** is the same in all three apps, each with its own copy:
+  `src/index.css` defines semantic color tokens for the light and dark
+  themes, and `tailwind.config.ts` replaces Tailwind's palette with them,
+  so components can only use tokens (`bg-surface`, `text-ink-muted`,
+  `bg-accent`, `text-danger-ink`, …). `lib/theme.ts` and
+  `components/ThemeToggle.tsx` add the toggle. See [`docs/ui/`](../../docs/ui/)
+  for the token list and screenshots.
 
 ## Where a RAG feature would plug in
 

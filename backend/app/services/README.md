@@ -171,10 +171,23 @@ RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
   `parse_upload` (so a bad file is a 422); `historical_qa_loader(course_id)`
   for the `historical_qa` source, one atomic chunk per thread.
   `drop_qa_thread` is the §4.6 un-accept cleanup.
-- `rag/pipeline.py`: the shared pipeline's contract: `RagConfig`,
-  `RagResult`, `RetrievedChunk` and the errors `run()` raises
+- `rag/pipeline.py`: `run()`, the shared pipeline (§5.3), and its contract:
+  `RagConfig`, `RagResult`, `RetrievedChunk` and the errors it raises
   (`UnknownProfile`, `ModelNotAvailable`, `ProfileNotIngested`,
-  `ProfileStale`). `run()` itself comes with retrieval and the prompt.
+  `ProfileStale`). The checks run first and in that order, so a bad request
+  is an error, never a silent no-match. Then it embeds the question with the
+  collection's own model and the profile's query prefix, queries the top
+  `RAG_TOP_K` chunks of the current syncs, drops past answers that are no
+  longer accepted (§4.6), keeps those at or above the threshold (cosine
+  similarity = 1 − distance) and generates through `generation_gate`. The
+  gate runs one generation at a time and serves waiting COMPARE callers
+  before LIVE ones; waiting counts against the deadline. Every hit is
+  logged (`rag_hit`) with its score. It never writes to the database.
+- `rag/prompt.py`: the tagged user message (§5.5). One tag per resource
+  type, best match first, no URLs or ids; only our own tag names are
+  escaped. Chunks are cut to `PROMPT_CHUNK_MAX_CHARS`, and the lowest-ranked
+  are dropped until the estimate (chunking tokenizer × 1.3) fits
+  `OLLAMA_NUM_CTX − OLLAMA_NUM_PREDICT`.
 - `rag/compare.py`: what the compare endpoint adds around `run()`: its time
   budget (`deadline`, `RAG_COMPARE_BUDGET_S`), VM-wide CPU use for the
   request (`CpuWindow`), and a record of compare traffic (`tracking`,

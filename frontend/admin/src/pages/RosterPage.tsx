@@ -120,21 +120,21 @@ export default function RosterPage() {
 
   return (
     <div className="p-8 max-w-3xl">
-      <h2 className="text-2xl font-bold text-slate-100 mb-6">Roster &amp; Staff</h2>
+      <h2 className="text-2xl font-bold text-ink mb-6">Roster &amp; Staff</h2>
 
-      <h3 className="text-lg font-semibold text-slate-100 mb-3">Student Roster</h3>
+      <h3 className="text-lg font-semibold text-ink mb-3">Student Roster</h3>
 
       <Card className="mb-6">
         <CardHeader>
-          <h4 className="text-base font-semibold text-slate-100">Upload Canvas Gradebook CSV</h4>
-          <p className="text-slate-400 text-sm mt-1">
+          <h4 className="text-base font-semibold text-ink">Upload Canvas Gradebook CSV</h4>
+          <p className="text-ink-muted text-sm mt-1">
             Expects a 'Student' and 'SIS Login ID' column. Re-uploading deactivates any netid
             missing from the new file. Access is granted automatically the next time a listed
             netid logs in — no separate step needed.
           </p>
         </CardHeader>
         <CardContent>
-          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 cursor-pointer hover:bg-slate-700">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-line-strong px-4 py-2 text-sm text-ink cursor-pointer hover:bg-surface-hover">
             <Upload size={16} /> {rosterUploading ? 'Uploading…' : 'Choose CSV file'}
             <input
               ref={rosterFileInput}
@@ -145,15 +145,15 @@ export default function RosterPage() {
               disabled={rosterUploading}
             />
           </label>
-          {rosterError && <p className="text-red-400 text-sm mt-2">{rosterError}</p>}
+          {rosterError && <p className="text-danger-ink text-sm mt-2">{rosterError}</p>}
           {rosterResult && (
-            <div className="text-sm text-slate-300 mt-3">
+            <div className="text-sm text-ink-secondary mt-3">
               <p>
                 Imported {rosterResult.imported}, updated {rosterResult.updated}, deactivated{' '}
                 {rosterResult.deactivated}.
               </p>
               {rosterResult.errors.length > 0 && (
-                <ul className="text-amber-400 list-disc list-inside mt-1">
+                <ul className="text-warning-ink list-disc list-inside mt-1">
                   {rosterResult.errors.map((e, i) => (
                     <li key={i}>{e}</li>
                   ))}
@@ -165,16 +165,16 @@ export default function RosterPage() {
       </Card>
 
       {roster.length === 0 ? (
-        <p className="text-slate-400 mb-8">No roster entries yet.</p>
+        <p className="text-ink-muted mb-8">No roster entries yet.</p>
       ) : (
         <div className="space-y-2 mb-8">
           {roster.map((r) => (
             <Card key={r.id} className="flex items-center justify-between px-6 py-3">
               <div>
-                <p className="font-medium text-slate-100">
-                  {r.full_name} <span className="text-slate-400">({r.netid})</span>
+                <p className="font-medium text-ink">
+                  {r.full_name} <span className="text-ink-muted">({r.netid})</span>
                 </p>
-                <p className="text-slate-500 text-sm">{r.email}</p>
+                <p className="text-ink-subtle text-sm">{r.email}</p>
               </div>
               <Button
                 size="sm"
@@ -188,19 +188,19 @@ export default function RosterPage() {
         </div>
       )}
 
-      <h3 className="text-lg font-semibold text-slate-100 mb-3">Course Staff</h3>
+      <h3 className="text-lg font-semibold text-ink mb-3">Course Staff</h3>
 
       <Card className="mb-6">
         <CardHeader>
-          <h4 className="text-base font-semibold text-slate-100">Upload Staff CSV</h4>
-          <p className="text-slate-400 text-sm mt-1">
+          <h4 className="text-base font-semibold text-ink">Upload Staff CSV</h4>
+          <p className="text-ink-muted text-sm mt-1">
             Expects 'netid', 'full_name', and 'email' columns. Unlike the roster, this takes
             effect immediately — an account is created for any netid that doesn't have one yet,
             and STAFF access to this course is granted right away.
           </p>
         </CardHeader>
         <CardContent>
-          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 cursor-pointer hover:bg-slate-700">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-line-strong px-4 py-2 text-sm text-ink cursor-pointer hover:bg-surface-hover">
             <Upload size={16} /> {staffUploading ? 'Uploading…' : 'Choose CSV file'}
             <input
               ref={staffFileInput}
@@ -211,15 +211,15 @@ export default function RosterPage() {
               disabled={staffUploading}
             />
           </label>
-          {staffError && <p className="text-red-400 text-sm mt-2">{staffError}</p>}
+          {staffError && <p className="text-danger-ink text-sm mt-2">{staffError}</p>}
           {staffResult && (
-            <div className="text-sm text-slate-300 mt-3">
+            <div className="text-sm text-ink-secondary mt-3">
               <p>
                 {staffResult.accounts_created} account(s) created, {staffResult.access_granted}{' '}
                 staff grant(s) added, {staffResult.already_staff} already staff.
               </p>
               {staffResult.errors.length > 0 && (
-                <ul className="text-amber-400 list-disc list-inside mt-1">
+                <ul className="text-warning-ink list-disc list-inside mt-1">
                   {staffResult.errors.map((e, i) => (
                     <li key={i}>{e}</li>
                   ))}
@@ -231,15 +231,15 @@ export default function RosterPage() {
       </Card>
 
       {staff.length === 0 ? (
-        <p className="text-slate-400">No staff granted for this course yet.</p>
+        <p className="text-ink-muted">No staff granted for this course yet.</p>
       ) : (
         <div className="space-y-2">
           {staff.map((s) => (
             <Card key={s.id} className="px-6 py-3">
-              <p className="font-medium text-slate-100">
+              <p className="font-medium text-ink">
                 {s.display_name || s.username || s.netid}
               </p>
-              <p className="text-slate-500 text-sm">
+              <p className="text-ink-subtle text-sm">
                 {s.username ? `@${s.username}` : s.netid} · {s.email ?? 'no email'}
               </p>
             </Card>

@@ -98,28 +98,28 @@ export default function QuestionDetailPage() {
     }
   }
 
-  if (!question) return <p className="p-8 text-slate-400">Loading…</p>;
+  if (!question) return <p className="p-8 text-ink-muted">Loading…</p>;
 
   return (
     <div className="p-8 max-w-2xl mx-auto space-y-6">
       <Link
         to="/questions"
-        className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-100"
+        className="inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink"
       >
         <ArrowLeft size={16} /> Back to Questions
       </Link>
       <Card>
         <CardContent className="pt-6">
           <div className="flex items-start justify-between gap-4">
-            <h2 className="text-xl font-bold text-slate-100">{question.title}</h2>
+            <h2 className="text-xl font-bold text-ink">{question.title}</h2>
             <Badge variant={question.status === 'OPEN' ? 'success' : 'outline'}>
               {question.status}
             </Badge>
           </div>
-          <p className="text-slate-400 text-sm mt-1">
+          <p className="text-ink-muted text-sm mt-1">
             Asked by {question.author.display_name}
           </p>
-          <p className="text-slate-200 mt-4 whitespace-pre-wrap">{question.body}</p>
+          <p className="text-ink mt-4 whitespace-pre-wrap">{question.body}</p>
           <div className="flex gap-1.5 mt-4 flex-wrap">
             {question.categories.map((c) => (
               <Badge key={c.id}>{c.name}</Badge>
@@ -130,12 +130,12 @@ export default function QuestionDetailPage() {
 
       <div className="space-y-3">
         {question.posts.map((post) => (
-          <Card key={post.id} className={post.is_accepted ? 'border-emerald-500' : ''}>
+          <Card key={post.id} className={post.is_accepted ? 'border-success' : ''}>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between gap-3 mb-2">
                 <div className="flex items-center gap-2">
                   {post.author && (
-                    <span className="font-semibold text-slate-100">{post.author.display_name}</span>
+                    <span className="font-semibold text-ink">{post.author.display_name}</span>
                   )}
                   {post.author_role === 'AI' ? (
                     <Badge variant="ai">AI-generated</Badge>
@@ -147,12 +147,12 @@ export default function QuestionDetailPage() {
                   <Badge variant="outline">{post.kind === 'ANSWER' ? 'Answer' : 'Follow-up'}</Badge>
                 </div>
                 {post.is_accepted && (
-                  <span className="flex items-center gap-1 text-emerald-400 text-sm">
+                  <span className="flex items-center gap-1 text-success-ink text-sm">
                     <CheckCircle2 size={16} /> Verified by staff
                   </span>
                 )}
               </div>
-              <p className="text-slate-200 whitespace-pre-wrap">{post.body}</p>
+              <p className="text-ink whitespace-pre-wrap">{post.body}</p>
               {post.citations && post.citations.length > 0 && (
                 <AiCitations citations={post.citations} />
               )}
@@ -160,7 +160,7 @@ export default function QuestionDetailPage() {
           </Card>
         ))}
         {polling && (
-          <p className="flex items-center gap-2 text-slate-400 text-sm" role="status">
+          <p className="flex items-center gap-2 text-ink-muted text-sm" role="status">
             <Loader2 size={14} className="animate-spin" />
             If course materials cover this question, an AI answer will appear here shortly.
           </p>
@@ -177,8 +177,8 @@ export default function QuestionDetailPage() {
                   onClick={() => setKind('FOLLOWUP')}
                   className={`rounded-lg px-3 py-1.5 text-sm border ${
                     kind === 'FOLLOWUP'
-                      ? 'bg-indigo-600 border-indigo-600 text-white'
-                      : 'border-slate-600 text-slate-300'
+                      ? 'bg-accent border-accent text-on-accent'
+                      : 'border-line-strong text-ink-secondary'
                   }`}
                 >
                   Follow-up
@@ -188,8 +188,8 @@ export default function QuestionDetailPage() {
                   onClick={() => setKind('ANSWER')}
                   className={`rounded-lg px-3 py-1.5 text-sm border ${
                     kind === 'ANSWER'
-                      ? 'bg-indigo-600 border-indigo-600 text-white'
-                      : 'border-slate-600 text-slate-300'
+                      ? 'bg-accent border-accent text-on-accent'
+                      : 'border-line-strong text-ink-secondary'
                   }`}
                 >
                   Answer
@@ -202,7 +202,7 @@ export default function QuestionDetailPage() {
                 rows={4}
                 required
               />
-              {error && <p className="text-red-400 text-sm">{error}</p>}
+              {error && <p className="text-danger-ink text-sm">{error}</p>}
               <Button type="submit" disabled={posting}>
                 {posting ? 'Posting…' : 'Post'}
               </Button>
@@ -210,7 +210,7 @@ export default function QuestionDetailPage() {
           </CardContent>
         </Card>
       ) : (
-        <p className="flex items-center gap-2 text-slate-500 text-sm">
+        <p className="flex items-center gap-2 text-ink-subtle text-sm">
           <Lock size={14} /> This thread was closed by course staff and no longer accepts new posts.
         </p>
       )}

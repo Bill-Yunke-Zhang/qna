@@ -59,7 +59,7 @@ export default function AskQuestionPage() {
     <div className="p-8 max-w-2xl mx-auto">
       <Card>
         <CardHeader>
-          <h2 className="text-xl font-bold text-slate-100">Ask a Question</h2>
+          <h2 className="text-xl font-bold text-ink">Ask a Question</h2>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -78,7 +78,7 @@ export default function AskQuestionPage() {
             />
             {categories.length > 0 ? (
               <div>
-                <p className="text-sm text-slate-400 mb-2">Categories (select at least one)</p>
+                <p className="text-sm text-ink-muted mb-2">Categories (select at least one)</p>
                 <div className="flex flex-wrap gap-2">
                   {categories.map((c) => (
                     <button
@@ -87,8 +87,8 @@ export default function AskQuestionPage() {
                       onClick={() => toggleCategory(c.id)}
                       className={`rounded-full px-3 py-1 text-sm border transition-colors ${
                         selected.has(c.id)
-                          ? 'bg-indigo-600 border-indigo-600 text-white'
-                          : 'border-slate-600 text-slate-300 hover:bg-slate-700'
+                          ? 'bg-accent border-accent text-on-accent'
+                          : 'border-line-strong text-ink-secondary hover:bg-surface-hover'
                       }`}
                     >
                       {c.name}
@@ -97,12 +97,12 @@ export default function AskQuestionPage() {
                 </div>
               </div>
             ) : (
-              <p className="text-amber-400 text-sm">
+              <p className="text-warning-ink text-sm">
                 This course has no categories yet — add one from the Categories page before
                 posting a question.
               </p>
             )}
-            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {error && <p className="text-danger-ink text-sm">{error}</p>}
             <div className="flex gap-3">
               <Button type="submit" disabled={saving || categories.length === 0}>
                 {saving ? 'Posting…' : 'Post Question'}
