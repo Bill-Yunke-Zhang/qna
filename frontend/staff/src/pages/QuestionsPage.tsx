@@ -45,16 +45,16 @@ export default function QuestionsPage() {
     : questions;
 
   if (!courseId) {
-    return <p className="p-8 text-slate-400">You aren't enrolled in any course yet.</p>;
+    return <p className="p-8 text-ink-muted">You aren't enrolled in any course yet.</p>;
   }
 
   return (
     <div className="p-8 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-slate-100">Questions</h2>
+        <h2 className="text-2xl font-bold text-ink">Questions</h2>
         <Link
           to="/questions/new"
-          className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-base font-semibold text-white transition-colors hover:bg-indigo-500"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-base font-semibold text-on-accent transition-colors hover:bg-accent-hover"
         >
           <Plus size={16} /> Ask a Question
         </Link>
@@ -62,7 +62,7 @@ export default function QuestionsPage() {
 
       <div className="flex flex-wrap gap-3 mb-6">
         <div className="relative flex-1 min-w-48">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-subtle" />
           <Input
             placeholder="Search questions…"
             value={q}
@@ -73,7 +73,7 @@ export default function QuestionsPage() {
         <select
           value={categoryId}
           onChange={(e) => setCategoryId(e.target.value)}
-          className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100"
+          className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"
         >
           <option value="">All categories</option>
           {categories.map((c) => (
@@ -85,7 +85,7 @@ export default function QuestionsPage() {
         <select
           value={status}
           onChange={(e) => setStatus(e.target.value)}
-          className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100"
+          className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"
         >
           <option value="">Open + closed</option>
           <option value="OPEN">Open</option>
@@ -94,33 +94,33 @@ export default function QuestionsPage() {
         <select
           value={aiUnverifiedOnly ? 'ai' : ''}
           onChange={(e) => setAiUnverifiedOnly(e.target.value === 'ai')}
-          className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100"
+          className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"
         >
           <option value="">All answers</option>
           <option value="ai">AI answered, not verified</option>
         </select>
       </div>
 
-      {error && <p className="text-red-400 mb-4 text-sm">{error}</p>}
+      {error && <p className="text-danger-ink mb-4 text-sm">{error}</p>}
 
       {loading ? (
-        <p className="text-slate-400">Loading…</p>
+        <p className="text-ink-muted">Loading…</p>
       ) : shown.length === 0 ? (
-        <p className="text-slate-400">No questions match your filters.</p>
+        <p className="text-ink-muted">No questions match your filters.</p>
       ) : (
         <div className="space-y-3">
           {shown.map((question) => (
             <Link key={question.id} to={`/questions/${question.id}`}>
-              <Card className="px-6 py-4 hover:border-indigo-500 transition-colors">
+              <Card className="px-6 py-4 hover:border-accent transition-colors">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <p className="font-semibold text-slate-100 flex items-center gap-2">
+                    <p className="font-semibold text-ink flex items-center gap-2">
                       {question.title}
                       {question.has_accepted_answer && (
-                        <CheckCircle2 size={16} className="text-emerald-400" />
+                        <CheckCircle2 size={16} className="text-success-ink" />
                       )}
                     </p>
-                    <p className="text-slate-400 text-sm mt-1">
+                    <p className="text-ink-muted text-sm mt-1">
                       {question.author.display_name} · {question.post_count} repl
                       {question.post_count === 1 ? 'y' : 'ies'}
                     </p>

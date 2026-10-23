@@ -2,10 +2,100 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Semantic color tokens (T8). Components only use these, through the
+ * Tailwind colors in tailwind.config.ts; no raw palette color appears
+ * anywhere else. Values are "R G B" so Tailwind can add opacity.
+ * Every text/background pair used meets WCAG 2.1 AA (4.5:1), and control
+ * borders and the focus ring meet 3:1, in both themes.
+ *
+ * The theme is the `data-theme` attribute on <html>, set before the first
+ * paint by the script in index.html and changed by ThemeToggle.
+ */
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --canvas: 244 246 250;
+  --surface: 255 255 255;
+  --surface-raised: 255 255 255;
+  --surface-hover: 238 241 246;
+  --line: 226 231 239;
+  --line-strong: 122 133 154;
+  --ink: 15 23 42;
+  --ink-secondary: 51 65 85;
+  --ink-muted: 75 87 104;
+  --ink-subtle: 95 107 125;
+  --accent: 79 70 229;
+  --accent-hover: 67 56 202;
+  --accent-soft: 236 238 254;
+  --accent-ink: 63 55 201;
+  --on-accent: 255 255 255;
+  --danger: 200 30 30;
+  --danger-hover: 165 24 24;
+  --danger-soft: 253 236 236;
+  --danger-ink: 180 35 24;
+  --success: 18 128 92;
+  --success-soft: 230 246 238;
+  --success-ink: 5 96 58;
+  --warning: 178 106 0;
+  --warning-soft: 253 243 225;
+  --warning-ink: 138 75 8;
+  --ai-soft: 241 236 254;
+  --ai-ink: 91 47 192;
+  --focus: 79 70 229;
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.06), 0 4px 12px rgb(15 23 42 / 0.05);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --canvas: 13 20 36;
+  --surface: 21 31 51;
+  --surface-raised: 28 39 61;
+  --surface-hover: 38 51 76;
+  --line: 43 56 80;
+  --line-strong: 107 122 148;
+  --ink: 238 242 248;
+  --ink-secondary: 205 213 225;
+  --ink-muted: 163 175 194;
+  --ink-subtle: 151 163 184;
+  --accent: 91 84 238;
+  --accent-hover: 76 69 220;
+  --accent-soft: 35 41 92;
+  --accent-ink: 174 183 255;
+  --on-accent: 255 255 255;
+  --danger: 217 54 54;
+  --danger-hover: 196 43 43;
+  --danger-soft: 60 26 34;
+  --danger-ink: 255 170 170;
+  --success: 47 179 126;
+  --success-soft: 17 52 43;
+  --success-ink: 116 227 181;
+  --warning: 211 154 43;
+  --warning-soft: 58 44 18;
+  --warning-ink: 248 207 110;
+  --ai-soft: 45 36 86;
+  --ai-ink: 201 184 255;
+  --focus: 139 144 255;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+}
+
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: #0f172a;
-  color: #f8fafc;
+  background: rgb(var(--canvas));
+  color: rgb(var(--ink));
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Set by lib/theme.ts for an instant while the theme changes. */
+.theme-switching,
+.theme-switching * {
+  transition: none !important;
+}
+
+/* A visible focus state on everything focusable, keyboard focus only. */
+:focus-visible {
+  outline: 2px solid rgb(var(--focus));
+  outline-offset: 2px;
 }

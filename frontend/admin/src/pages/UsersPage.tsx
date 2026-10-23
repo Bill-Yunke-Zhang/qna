@@ -64,7 +64,7 @@ export default function UsersPage() {
   return (
     <div className="p-8 max-w-4xl">
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-slate-100">Users</h2>
+        <h2 className="text-2xl font-bold text-ink">Users</h2>
         <Button size="sm" onClick={() => setShowForm(!showForm)}>
           <Plus size={16} className="mr-1" /> New Local Account
         </Button>
@@ -73,8 +73,8 @@ export default function UsersPage() {
       {showForm && (
         <Card className="mb-6">
           <CardHeader>
-            <h3 className="text-lg font-semibold text-slate-100">Create Local Account</h3>
-            <p className="text-slate-400 text-sm mt-1">
+            <h3 className="text-lg font-semibold text-ink">Create Local Account</h3>
+            <p className="text-ink-muted text-sm mt-1">
               For course staff or students without campus SSO — e.g. TAs using a shared account.
             </p>
           </CardHeader>
@@ -84,7 +84,7 @@ export default function UsersPage() {
               <Input placeholder="Display name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
               <Input placeholder="Email (optional)" value={email} onChange={(e) => setEmail(e.target.value)} />
               <Input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-              {error && <p className="text-red-400 text-sm col-span-2">{error}</p>}
+              {error && <p className="text-danger-ink text-sm col-span-2">{error}</p>}
               <div className="col-span-2 flex gap-3">
                 <Button type="submit" disabled={saving}>{saving ? 'Creating…' : 'Create'}</Button>
                 <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>Cancel</Button>
@@ -98,14 +98,14 @@ export default function UsersPage() {
         {users.map((u) => (
           <Card
             key={u.id}
-            className="flex items-center justify-between px-6 py-3 cursor-pointer hover:border-indigo-500"
+            className="flex items-center justify-between px-6 py-3 cursor-pointer hover:border-accent"
             onClick={() => navigate(`/users/${u.id}`)}
           >
             <div>
-              <p className="font-medium text-slate-100">
+              <p className="font-medium text-ink">
                 {u.display_name || u.username || u.netid}
               </p>
-              <p className="text-slate-500 text-sm">
+              <p className="text-ink-subtle text-sm">
                 {u.username ? `@${u.username}` : u.netid} · {u.role}
               </p>
             </div>

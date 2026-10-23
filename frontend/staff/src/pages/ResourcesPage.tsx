@@ -23,12 +23,12 @@ const POLL_INTERVAL_MS = 5000;
 const POLL_LIMIT_MS = 15 * 60 * 1000;
 
 const selectClass =
-  'w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100 ' +
-  'focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent';
+  'w-full rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink ' +
+  'focus:outline-none focus:ring-2 focus:ring-focus focus:border-transparent';
 const fileClass =
-  'block w-full text-sm text-slate-300 file:mr-3 file:rounded-lg file:border-0 ' +
-  'file:bg-slate-700 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-slate-100 ' +
-  'hover:file:bg-slate-600';
+  'block w-full text-sm text-ink-secondary file:mr-3 file:rounded-lg file:border-0 ' +
+  'file:bg-surface-hover file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-ink ' +
+  'hover:file:bg-line';
 
 function errorText(err: unknown, fallback: string) {
   return err instanceof Error ? err.message : fallback;
@@ -84,22 +84,22 @@ export default function ResourcesPage() {
 
   return (
     <div className="p-8 max-w-3xl mx-auto">
-      <h2 className="text-2xl font-bold text-slate-100 mb-2">Course Resources</h2>
-      <p className="text-slate-400 text-sm mb-6">
+      <h2 className="text-2xl font-bold text-ink mb-2">Course Resources</h2>
+      <p className="text-ink-muted text-sm mb-6">
         Material the AI answers from. Each source is split into chunks and indexed under one or more
         ingestion profiles; students' questions are answered with the live profile
         {data && (
           <>
             {' '}
-            (<span className="text-slate-200">{data.live_profile}</span>)
+            (<span className="text-ink">{data.live_profile}</span>)
           </>
         )}
         .
       </p>
 
-      {loadError && <p className="text-red-400 text-sm mb-4">{loadError}</p>}
+      {loadError && <p className="text-danger-ink text-sm mb-4">{loadError}</p>}
       {stalled && anySyncing && (
-        <p className="flex items-center gap-2 rounded-lg border border-amber-600/40 bg-amber-600/10 px-4 py-2 mb-4 text-sm text-amber-300">
+        <p className="flex items-center gap-2 rounded-lg border border-warning bg-warning-soft px-4 py-2 mb-4 text-sm text-warning-ink">
           <AlertTriangle size={14} /> No result yet. Check back or re-sync.
         </p>
       )}
@@ -109,7 +109,7 @@ export default function ResourcesPage() {
           <AddResourceCard courseId={courseId} list={data} onChanged={changed} />
           <div className="space-y-4 mb-6">
             {data.resources.length === 0 && (
-              <p className="text-slate-400 text-sm">No resources yet.</p>
+              <p className="text-ink-muted text-sm">No resources yet.</p>
             )}
             {data.resources.map((r) => (
               <ResourceCard key={r.id} courseId={courseId} resource={r} list={data} onChanged={changed} />
@@ -140,17 +140,17 @@ function ProfilePicker({
   }
   return (
     <fieldset className="flex flex-wrap gap-x-4 gap-y-1">
-      <legend className="text-sm text-slate-400 mb-1">Profiles</legend>
+      <legend className="text-sm text-ink-muted mb-1">Profiles</legend>
       {list.profiles.map((name) => (
-        <label key={name} className="flex items-center gap-1.5 text-sm text-slate-200">
+        <label key={name} className="flex items-center gap-1.5 text-sm text-ink">
           <input
             type="checkbox"
             checked={value.includes(name)}
             onChange={() => toggle(name)}
-            className="accent-indigo-500"
+            className="accent-accent"
           />
           {name}
-          {name === list.live_profile && <span className="text-xs text-slate-400">(live)</span>}
+          {name === list.live_profile && <span className="text-xs text-ink-muted">(live)</span>}
         </label>
       ))}
     </fieldset>
@@ -159,13 +159,13 @@ function ProfilePicker({
 
 function SyncTable({ source, live }: { source: SourceStatus; live: string }) {
   if (source.syncs.length === 0) {
-    return <p className="text-slate-400 text-sm">Not indexed under any profile yet.</p>;
+    return <p className="text-ink-muted text-sm">Not indexed under any profile yet.</p>;
   }
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-left text-slate-400">
+          <tr className="text-left text-ink-muted">
             <th className="py-1 pr-4 font-medium">Profile</th>
             <th className="py-1 pr-4 font-medium">Last synced</th>
             <th className="py-1 pr-4 font-medium">Chunks</th>
@@ -174,30 +174,30 @@ function SyncTable({ source, live }: { source: SourceStatus; live: string }) {
         </thead>
         <tbody>
           {source.syncs.map((s) => (
-            <tr key={s.profile} className="border-t border-slate-700 align-top">
-              <td className="py-1.5 pr-4 text-slate-200 whitespace-nowrap">
+            <tr key={s.profile} className="border-t border-line align-top">
+              <td className="py-1.5 pr-4 text-ink whitespace-nowrap">
                 {s.profile}
-                {s.profile === live && <span className="ml-1 text-xs text-slate-400">(live)</span>}
+                {s.profile === live && <span className="ml-1 text-xs text-ink-muted">(live)</span>}
               </td>
-              <td className="py-1.5 pr-4 text-slate-300 whitespace-nowrap">
+              <td className="py-1.5 pr-4 text-ink-secondary whitespace-nowrap">
                 {formatTimestamp(s.last_synced_at)}
               </td>
-              <td className="py-1.5 pr-4 text-slate-300 whitespace-nowrap">
+              <td className="py-1.5 pr-4 text-ink-secondary whitespace-nowrap">
                 {s.chunk_count}
                 {s.truncated_chunk_count > 0 && (
-                  <span className="ml-1 text-amber-300" title="Chunks cut short by the model's token limit">
+                  <span className="ml-1 text-warning-ink" title="Chunks cut short by the model's token limit">
                     ({s.truncated_chunk_count} truncated)
                   </span>
                 )}
               </td>
-              <td className="py-1.5 text-red-300">
+              <td className="py-1.5 text-danger-ink">
                 {s.last_error ? (
                   <>
                     {s.last_error}
-                    <span className="block text-xs text-slate-400">{formatTimestamp(s.last_error_at)}</span>
+                    <span className="block text-xs text-ink-muted">{formatTimestamp(s.last_error_at)}</span>
                   </>
                 ) : (
-                  <span className="text-slate-500">—</span>
+                  <span className="text-ink-subtle">—</span>
                 )}
               </td>
             </tr>
@@ -287,13 +287,13 @@ function AddResourceCard({
   }
 
   const tabClass = (active: boolean) =>
-    `whitespace-nowrap px-3 py-1.5 text-sm rounded-lg ${active ? 'bg-slate-700 text-slate-100' : 'text-slate-400 hover:text-slate-200'}`;
+    `whitespace-nowrap px-3 py-1.5 text-sm rounded-lg ${active ? 'bg-surface-hover text-ink' : 'text-ink-muted hover:text-ink'}`;
 
   return (
     <Card className="mb-6">
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="text-lg font-semibold text-slate-100">Add a resource</h3>
+          <h3 className="text-lg font-semibold text-ink">Add a resource</h3>
           <div className="flex gap-1" role="tablist">
             <button type="button" role="tab" aria-selected={mode === 'URL'} className={tabClass(mode === 'URL')} onClick={() => setMode('URL')}>
               From a URL
@@ -369,7 +369,7 @@ function AddResourceCard({
                   onChange={(e) => setLinkBaseUrl(e.target.value)}
                   required
                 />
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-ink-muted">
                   The file itself isn't stored. AI citations link here instead
                   {type === 'REPO' ? ', followed by each file\'s path inside the zip' : ''}.
                 </p>
@@ -378,7 +378,7 @@ function AddResourceCard({
           )}
 
           <ProfilePicker list={list} value={profiles} onChange={setProfiles} />
-          {error && <p className="text-red-400 text-sm">{error}</p>}
+          {error && <p className="text-danger-ink text-sm">{error}</p>}
           <Button type="submit" disabled={saving || profiles.length === 0}>
             <span className="flex items-center gap-1.5">
               {mode === 'URL' ? <Plus size={16} /> : <Upload size={16} />}
@@ -460,7 +460,7 @@ function ResourceCard({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-slate-100">{resource.title}</span>
+              <span className="font-semibold text-ink">{resource.title}</span>
               <Badge variant="outline">{RESOURCE_TYPE_LABELS[resource.type]}</Badge>
               <Badge variant="outline">{resource.origin === 'URL' ? 'URL' : 'Upload'}</Badge>
               <SourceFlags source={resource} />
@@ -470,13 +470,13 @@ function ResourceCard({
                 href={link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mt-1 inline-flex max-w-full items-center gap-1 text-sm text-indigo-300 hover:text-indigo-200 underline break-all"
+                className="mt-1 inline-flex max-w-full items-center gap-1 text-sm text-accent-ink hover:text-ink underline break-all"
               >
                 <ExternalLink size={12} className="shrink-0" /> {link}
               </a>
             )}
             {resource.repo_branch && (
-              <p className="text-xs text-slate-400">Branch: {resource.repo_branch}</p>
+              <p className="text-xs text-ink-muted">Branch: {resource.repo_branch}</p>
             )}
           </div>
           <div className="flex shrink-0 gap-2">
@@ -506,7 +506,7 @@ function ResourceCard({
         </div>
 
         {open === 'sync' && (
-          <form onSubmit={handleSync} className="rounded-lg border border-slate-700 p-3 space-y-3">
+          <form onSubmit={handleSync} className="rounded-lg border border-line p-3 space-y-3">
             <ProfilePicker list={list} value={profiles} onChange={setProfiles} />
             <Button type="submit" size="sm" disabled={busy || profiles.length === 0}>
               {busy ? 'Starting…' : 'Start sync'}
@@ -514,7 +514,7 @@ function ResourceCard({
           </form>
         )}
         {open === 'replace' && (
-          <form onSubmit={handleReplace} className="rounded-lg border border-slate-700 p-3 space-y-3">
+          <form onSubmit={handleReplace} className="rounded-lg border border-line p-3 space-y-3">
             <input
               type="file"
               aria-label="New file"
@@ -529,7 +529,7 @@ function ResourceCard({
             </Button>
           </form>
         )}
-        {error && <p className="text-red-400 text-sm">{error}</p>}
+        {error && <p className="text-danger-ink text-sm">{error}</p>}
 
         <SyncTable source={resource} live={list.live_profile} />
       </CardContent>
@@ -583,10 +583,10 @@ function HistoricalQACard({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold text-slate-100">Past Q&amp;A</span>
+              <span className="font-semibold text-ink">Past Q&amp;A</span>
               <SourceFlags source={source} />
             </div>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-ink-muted">
               Threads with a staff-verified human answer. Un-verifying an answer removes its thread
               right away; newly verified answers are added only when you re-index.
             </p>
@@ -604,14 +604,14 @@ function HistoricalQACard({
           </Button>
         </div>
         {open && (
-          <form onSubmit={handleReindex} className="rounded-lg border border-slate-700 p-3 space-y-3">
+          <form onSubmit={handleReindex} className="rounded-lg border border-line p-3 space-y-3">
             <ProfilePicker list={list} value={profiles} onChange={setProfiles} />
             <Button type="submit" size="sm" disabled={busy || profiles.length === 0}>
               {busy ? 'Starting…' : 'Start re-index'}
             </Button>
           </form>
         )}
-        {error && <p className="text-red-400 text-sm">{error}</p>}
+        {error && <p className="text-danger-ink text-sm">{error}</p>}
         <SyncTable source={source} live={list.live_profile} />
       </CardContent>
     </Card>

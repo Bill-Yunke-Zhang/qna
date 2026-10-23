@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate, NavLink } from 'react-router-dom';
-import { BookOpen, Users, LogOut } from 'lucide-react';
+import { BookOpen, Users, LogOut, Shield } from 'lucide-react';
+import { ThemeToggle } from './components/ThemeToggle';
 import LoginPage from './pages/LoginPage';
 import CoursesPage from './pages/CoursesPage';
 import RosterPage from './pages/RosterPage';
@@ -22,14 +23,19 @@ function AdminLayout() {
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-      isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-slate-100'
+      isActive ? 'bg-accent text-on-accent' : 'text-ink-secondary hover:bg-surface-hover hover:text-ink'
     }`;
 
   return (
     <div className="flex min-h-screen">
-      <aside className="w-56 shrink-0 bg-slate-900 border-r border-slate-700 flex flex-col">
-        <div className="px-6 py-5 border-b border-slate-700">
-          <h1 className="text-lg font-bold text-white">QnA Admin</h1>
+      <aside className="w-56 shrink-0 bg-surface border-r border-line flex flex-col">
+        <div className="px-6 py-5 border-b border-line">
+          <h1 className="flex items-center gap-2.5 text-lg font-bold text-ink">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-accent-ink">
+              <Shield size={18} aria-hidden />
+            </span>
+            QnA Admin
+          </h1>
         </div>
         <nav className="flex-1 p-3 space-y-1">
           <NavLink to="/courses" className={linkClass}>
@@ -39,13 +45,14 @@ function AdminLayout() {
             <Users size={16} /> Users
           </NavLink>
         </nav>
-        <div className="p-3 border-t border-slate-700">
+        <div className="p-3 border-t border-line flex items-center gap-2">
           <button
             onClick={logout}
-            className="flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-slate-300 hover:bg-slate-700 hover:text-slate-100 w-full transition-colors"
+            className="flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-ink-secondary hover:bg-surface-hover hover:text-ink flex-1 transition-colors"
           >
             <LogOut size={16} /> Logout
           </button>
+          <ThemeToggle />
         </div>
       </aside>
 
