@@ -91,6 +91,19 @@ class Settings(BaseSettings):
     # the last one ends, so a harness run isn't slowed by live generations.
     RAG_COMPARE_QUIET_S: float = 60.0
 
+    # Retrieval and generation in pipeline.run() (§5.3, §5.5).
+    RAG_TOP_K: int = 5
+    # The question is cut to this before it is embedded and prompted, and
+    # each chunk's text in the prompt to PROMPT_CHUNK_MAX_CHARS, so the
+    # prompt always fits OLLAMA_NUM_CTX (Ollama would silently cut its start).
+    QUESTION_MAX_CHARS: int = 4000
+    PROMPT_CHUNK_MAX_CHARS: int = 2000
+    OLLAMA_NUM_CTX: int = 8192
+    # Caps runaway generations; temperature 0 and a fixed seed make reruns
+    # of the eval reproduce the committed report as closely as Ollama allows.
+    OLLAMA_NUM_PREDICT: int = 512
+    OLLAMA_SEED: int = 639
+
     # The only host repository URLs may point at, and the only host the
     # GitLab access token is ever sent to (§8).
     GITLAB_HOST: str = "git.doit.wisc.edu"

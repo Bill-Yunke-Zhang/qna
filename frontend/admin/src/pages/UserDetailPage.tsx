@@ -63,30 +63,30 @@ export default function UserDetailPage() {
     await load();
   }
 
-  if (!user) return <p className="p-8 text-slate-400">Loading…</p>;
+  if (!user) return <p className="p-8 text-ink-muted">Loading…</p>;
 
   const courseName = (id: number) => courses.find((c) => c.id === id)?.name ?? `Course ${id}`;
 
   return (
     <div className="p-8 max-w-2xl">
-      <h2 className="text-2xl font-bold text-slate-100 mb-1">
+      <h2 className="text-2xl font-bold text-ink mb-1">
         {user.display_name || user.username || user.netid}
       </h2>
-      <p className="text-slate-400 text-sm mb-6">
+      <p className="text-ink-muted text-sm mb-6">
         {user.username ? `@${user.username}` : user.netid} · {user.email ?? 'no email'} ·{' '}
         {user.role}
       </p>
 
       <Card className="mb-6">
         <CardHeader>
-          <h3 className="text-lg font-semibold text-slate-100">Grant Course Access</h3>
+          <h3 className="text-lg font-semibold text-ink">Grant Course Access</h3>
         </CardHeader>
         <CardContent>
           <form onSubmit={grantAccess} className="flex gap-3 flex-wrap items-center">
             <select
               value={selectedCourse}
               onChange={(e) => setSelectedCourse(e.target.value)}
-              className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100 flex-1 min-w-40"
+              className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink flex-1 min-w-40"
             >
               <option value="">Select a course…</option>
               {courses.map((c) => (
@@ -98,27 +98,27 @@ export default function UserDetailPage() {
             <select
               value={selectedRole}
               onChange={(e) => setSelectedRole(e.target.value as 'STUDENT' | 'STAFF')}
-              className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100"
+              className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"
             >
               <option value="STUDENT">Student</option>
               <option value="STAFF">Staff</option>
             </select>
             <Button type="submit">Grant</Button>
           </form>
-          {error && <p className="text-red-400 text-sm mt-2">{error}</p>}
+          {error && <p className="text-danger-ink text-sm mt-2">{error}</p>}
         </CardContent>
       </Card>
 
-      <h3 className="text-lg font-semibold text-slate-100 mb-3">Course Access</h3>
+      <h3 className="text-lg font-semibold text-ink mb-3">Course Access</h3>
       {user.course_access.length === 0 ? (
-        <p className="text-slate-400">No course access granted yet.</p>
+        <p className="text-ink-muted">No course access granted yet.</p>
       ) : (
         <div className="space-y-2">
           {user.course_access.map((access) => (
             <Card key={access.course_id} className="flex items-center justify-between px-6 py-3">
               <div>
-                <p className="font-medium text-slate-100">{courseName(access.course_id)}</p>
-                <p className="text-slate-500 text-sm">{access.role}</p>
+                <p className="font-medium text-ink">{courseName(access.course_id)}</p>
+                <p className="text-ink-subtle text-sm">{access.role}</p>
               </div>
               <Button variant="outline" size="sm" onClick={() => revokeAccess(access.course_id)}>
                 <Trash2 size={14} />
