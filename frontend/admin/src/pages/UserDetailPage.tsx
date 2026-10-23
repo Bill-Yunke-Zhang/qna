@@ -84,6 +84,7 @@ export default function UserDetailPage() {
         <CardContent>
           <form onSubmit={grantAccess} className="flex gap-3 flex-wrap items-center">
             <select
+              aria-label="Course"
               value={selectedCourse}
               onChange={(e) => setSelectedCourse(e.target.value)}
               className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink flex-1 min-w-40"
@@ -96,6 +97,7 @@ export default function UserDetailPage() {
               ))}
             </select>
             <select
+              aria-label="Role"
               value={selectedRole}
               onChange={(e) => setSelectedRole(e.target.value as 'STUDENT' | 'STAFF')}
               className="rounded-lg border border-line-strong bg-surface-raised px-3 py-2 text-ink"
@@ -120,7 +122,12 @@ export default function UserDetailPage() {
                 <p className="font-medium text-ink">{courseName(access.course_id)}</p>
                 <p className="text-ink-subtle text-sm">{access.role}</p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => revokeAccess(access.course_id)}>
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label="Revoke course access"
+                onClick={() => revokeAccess(access.course_id)}
+              >
                 <Trash2 size={14} />
               </Button>
             </Card>

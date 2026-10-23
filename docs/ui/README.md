@@ -52,6 +52,28 @@ color tokens with a light and a dark theme, and a toggle in every app.
 - Everything focusable gets a 2px `focus` outline on keyboard focus
   (`:focus-visible`), in addition to the buttons' own focus rings.
 
+### Independent check (2026-10-23, ygoel3)
+
+A second pass with different tools, on 12 pages × 2 themes (student:
+login, questions, thread, ask; staff: login, questions, thread with an AI
+answer and a retracted one expanded, resources, categories; admin: login,
+courses, users), with the API answered by fixtures:
+
+- **axe-core 4.10** (WCAG 2.1 A + AA rules) on each page: no
+  `color-contrast` violations in either theme. The token pairs were also
+  recomputed independently and agree with the numbers above.
+- **Keyboard:** Tab through each page; every focused element showed a
+  visible outline or ring. Every `focus:outline-none` in the three apps has
+  a `focus:ring` replacing it.
+- **Names (fixed in this change, not theme regressions; they predate T8):**
+  axe flagged 7 filter/form `<select>`s with no accessible name and 3
+  icon-only buttons (edit course, revoke access, delete category). Each now
+  has an `aria-label`. After the fix: 24/24 page-theme combinations pass.
+- **Noted, not a failure:** in dark mode, `line-strong` against
+  `surface-hover` is 2.91:1. It only meets when an outline button is
+  hovered, where the comparison that WCAG 1.4.11 asks for (the border
+  against the page around the control) still passes.
+
 ## Screenshots
 
 `before/` is the starter UI (dark only), taken on 2026-10-23 before any
