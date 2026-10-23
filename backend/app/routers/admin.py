@@ -93,6 +93,7 @@ async def update_course(
         course.name = body.name
     if body.semester is not None:
         course.semester = body.semester
+    await db.commit()
     return course
 
 
@@ -179,6 +180,7 @@ async def patch_roster_entry(
         entry.full_name = body.full_name.strip()
     if body.email is not None:
         entry.email = str(body.email).lower()
+    await db.commit()
     return entry
 
 
@@ -325,6 +327,7 @@ async def update_user(
         user.password_hash = hash_password(body.password)
     if body.role is not None:
         user.role = body.role
+    await db.commit()
     return user
 
 
@@ -340,6 +343,7 @@ async def delete_user(
     if user.role == "ADMIN":
         raise ConflictError("Cannot delete an admin account")
     await db.delete(user)
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +378,10 @@ async def grant_course_access(
         db.add(
             UserCourseAccess(user_id=user_id, course_id=body.course_id, role=body.role)
         )
+    # Explicitly, before the 204: get_db's own commit runs after the
+    # response is sent, so a client using the access right away could get
+    # a 404 (39 of 40 times in a local loop).
+    await db.commit()
 
 
 @router.delete("/users/{user_id}/course-access/{course_id}", status_code=204)
@@ -395,3 +403,4 @@ async def revoke_course_access(
             f"No course access record for user {user_id} / course {course_id}"
         )
     await db.delete(access)
+    await db.commit()

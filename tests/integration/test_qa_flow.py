@@ -325,3 +325,38 @@ class TestAIPostFields:
         )
         listed = next(x for x in r.json() if x["id"] == qid)
         assert listed["has_ai_answer"] is False and listed["post_count"] == 1
+
+
+class TestWritesCommitBeforeResponding:
+    def test_granted_access_works_on_the_very_next_request(
+        self, base_url, course_id, admin_token
+    ):
+        # Write routes must commit before responding: get_db's own commit
+        # runs after the response is sent, and without an explicit one a
+        # client that used its new access right away got a 404 (39 of 40
+        # times locally). It only shows on a reused (keep-alive) connection,
+        # as a browser uses; a new connection per request is slow enough to
+        # hide it, so this test grants and uses access on one client.
+        import uuid
+
+        api = f"{base_url}/api"
+        admin = _headers(admin_token)
+        with httpx.Client(timeout=10.0) as c:
+            for _ in range(10):
+                netid = f"test-race-{uuid.uuid4().hex[:8]}"
+                temp = c.post(f"{api}/auth/login", json={"netid": netid}).json()["temp_token"]
+                token = c.post(
+                    f"{api}/auth/exchange-temp", headers=_headers(temp)
+                ).json()["access_token"]
+                user_id = next(
+                    u["id"] for u in c.get(f"{api}/admin/users", headers=admin).json()
+                    if u["netid"] == netid
+                )
+                r = c.post(
+                    f"{api}/admin/users/{user_id}/course-access",
+                    json={"course_id": course_id, "role": "STAFF"},
+                    headers=admin,
+                )
+                assert r.status_code == 204, r.text
+                r = c.get(f"{api}/courses/{course_id}/questions", headers=_headers(token))
+                assert r.status_code == 200, r.text
