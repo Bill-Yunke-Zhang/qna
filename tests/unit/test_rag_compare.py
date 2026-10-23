@@ -35,10 +35,15 @@ class FakeDb:
 
     def __init__(self):
         self.courses = {COURSE: SimpleNamespace(id=COURSE)}
+        self.closed = False
 
     async def get(self, model, key):
         assert model.__name__ == "Course", f"unexpected get({model.__name__})"
+        assert not self.closed, "read after the session was released"
         return self.courses.get(key)
+
+    async def close(self):
+        self.closed = True
 
     def add(self, obj):
         raise AssertionError("the compare endpoint must not create rows")
@@ -91,13 +96,16 @@ def runs(monkeypatch):
                 caller=caller,
                 deadline=deadline,
                 active_during=compare.active_or_ended_within(0),
+                db_closed=calls_ns.db.closed if calls_ns.db else None,
             )
         )
         if calls_ns.error is not None:
             raise calls_ns.error
         return calls_ns.result
 
-    calls_ns = SimpleNamespace(calls=calls, result=matched_result(), error=None)
+    calls_ns = SimpleNamespace(
+        calls=calls, result=matched_result(), error=None, db=None
+    )
     monkeypatch.setattr(pipeline, "run", fake_run)
     monkeypatch.setattr(compare, "_active", 0)
     monkeypatch.setattr(compare, "_last_ended", None)
@@ -124,9 +132,18 @@ async def _client_as(role, fake_db):
 async def client(runs):
     from app.main import app
 
-    async with await _client_as("STAFF", FakeDb()) as ac:
+    runs.db = FakeDb()
+    async with await _client_as("STAFF", runs.db) as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+async def test_the_db_session_is_released_before_the_pipeline_runs(client, runs):
+    # Generation can take up to RAG_COMPARE_BUDGET_S; an idle pooled
+    # connection held that long could starve ordinary requests.
+    r = await client.post(url(), json=BODY)
+    assert r.status_code == 200
+    assert runs.calls[0]["db_closed"] is True
 
 
 def url(course_id=COURSE) -> str:
