@@ -309,6 +309,11 @@ async def test_register_repo_refuses_bad_urls_and_branches(
     assert fake_db.resources == {}
 
 
+async def test_list_in_missing_course_is_404(client):
+    r = await client.get(f"{base(999)}/resources")
+    assert r.status_code == 404
+
+
 async def test_register_in_missing_course_is_404(client):
     r = await client.post(f"{base(999)}/resources", json=url_resource())
     assert r.status_code == 404
