@@ -770,7 +770,13 @@ bounded at every input, not only for embeddings:
   phrase ("I don't have enough information", "The provided context does not
   contain", …) **and** is short (e.g. under ~40 words). A useful partial answer
   like "The syllabus does not cover X, but Y…" isn't suppressed. Only the live
-  path uses it (§5.4). Live posting differs from what the eval measures in
+  path uses it (§5.4). **Updated 2026-10-23 from real `qwen2.5:1.5b` output**
+  (Bill's eval run caught 0 of 4 refusals with the first version): the
+  participle can follow the noun ("The context provided does not contain…"),
+  and a refusal can start with its subject ("Midterm 1 is not mentioned in the
+  provided information."). The second form counts only as the answer's first
+  and only clause, so "3 slip days; rollover is not mentioned in the context"
+  still posts. It lives in `ai_answer_service.py`, not `pipeline.py` (§9). Live posting differs from what the eval measures in
   **two places**: this filter, and the input text (live embeds
   `title + "\n\n" + body`, while the harness sends one `question` string).
   The second is inherent, since the harness has no title. T10 reports both how many eval answers it would
