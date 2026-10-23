@@ -52,11 +52,11 @@ export default function CategoriesPage() {
 
   return (
     <div className="p-8 max-w-2xl mx-auto">
-      <h2 className="text-2xl font-bold text-slate-100 mb-6">Categories</h2>
+      <h2 className="text-2xl font-bold text-ink mb-6">Categories</h2>
 
       <Card className="mb-6">
         <CardHeader>
-          <h3 className="text-lg font-semibold text-slate-100">New Category</h3>
+          <h3 className="text-lg font-semibold text-ink">New Category</h3>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleCreate} className="space-y-3">
@@ -72,7 +72,7 @@ export default function CategoriesPage() {
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
             />
-            {error && <p className="text-red-400 text-sm">{error}</p>}
+            {error && <p className="text-danger-ink text-sm">{error}</p>}
             <Button type="submit" disabled={saving}>
               <span className="flex items-center gap-1.5">
                 <Plus size={16} /> {saving ? 'Creating…' : 'Create'}
@@ -86,8 +86,8 @@ export default function CategoriesPage() {
         {categories.map((c) => (
           <Card key={c.id} className="px-6 py-4 flex items-center justify-between">
             <div>
-              <p className="font-semibold text-slate-100">{c.name}</p>
-              {c.description && <p className="text-slate-400 text-sm">{c.description}</p>}
+              <p className="font-semibold text-ink">{c.name}</p>
+              {c.description && <p className="text-ink-muted text-sm">{c.description}</p>}
             </div>
             <Button variant="outline" size="sm" onClick={() => handleDelete(c.id)}>
               <Trash2 size={14} />
