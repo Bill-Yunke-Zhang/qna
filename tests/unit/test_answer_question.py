@@ -269,6 +269,13 @@ def test_citations_are_the_best_three_distinct_sources():
         "Sorry, I can't help with that.",
         "There is not enough information in the context.",
         '  "I cannot answer this from the material."',
+        # How qwen2.5:1.5b actually phrases them (Bill's eval run, review of !30):
+        # the participle after the noun, or the subject first.
+        "The context provided does not contain any information about office hours.",
+        "Midterm 1 is not mentioned in the provided information.",
+        "The information given doesn't say when P4 is due.",
+        "The provided materials do not cover regrades.",
+        "Office hours are not covered in the context.",
     ],
 )
 def test_short_refusals_are_suppressed(answer):
@@ -285,6 +292,12 @@ def test_short_refusals_are_suppressed(answer):
         "Slip days: 3. The context does not say whether they roll over.",
         # Long enough to be a real answer despite the opening.
         "The provided context does not say directly. " + "Detail " * 40,
+        # "not mentioned" only counts as the answer's first and only clause.
+        "There are 3 slip days; rollover is not mentioned in the provided context.",
+        "You get 5 slip days. Rollover is not mentioned in the context.",
+        "Slip days: 5. Whether they roll over is not covered in the information.",
+        # The participle form with no refusal in it.
+        "The context provided shows that each student gets 5 slip days.",
     ],
 )
 def test_real_and_partial_answers_are_posted(answer):
