@@ -6,6 +6,7 @@ import {
   RESOURCE_TYPE_LABELS,
   defaultProfiles,
   formatTimestamp,
+  type RagHealth,
   type Resource,
   type ResourceList,
   type ResourceType,
@@ -39,6 +40,7 @@ export default function ResourcesPage() {
   const [data, setData] = useState<ResourceList | null>(null);
   const [loadError, setLoadError] = useState('');
   const [stalled, setStalled] = useState(false);
+  const [health, setHealth] = useState<RagHealth | null>(null);
 
   async function load() {
     if (!courseId) return;
@@ -50,16 +52,35 @@ export default function ResourcesPage() {
     }
   }
 
+  // Slower than the list (it asks every RAG service), so not on each poll:
+  // on open, after an action, and when syncing ends. A failure leaves the
+  // banner off rather than guessing.
+  async function loadHealth() {
+    if (!courseId) return;
+    try {
+      setHealth(await api.get<RagHealth>(`/courses/${courseId}/rag/health`));
+    } catch {
+      setHealth(null);
+    }
+  }
+
   useEffect(() => {
     setData(null);
+    setHealth(null);
     setStalled(false);
     void load();
+    void loadHealth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId]);
 
   const anySyncing = Boolean(
     data && (data.historical_qa.syncing || data.resources.some((r) => r.syncing))
   );
+
+  useEffect(() => {
+    if (data && !anySyncing) void loadHealth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anySyncing]);
 
   useEffect(() => {
     if (!anySyncing) return;
@@ -80,6 +101,7 @@ export default function ResourcesPage() {
   async function changed() {
     setStalled(false);
     await load();
+    void loadHealth();
   }
 
   return (
@@ -97,6 +119,25 @@ export default function ResourcesPage() {
         .
       </p>
 
+      {health && !health.live.ok && (
+        // docs/design-rag.md §5.4: otherwise live answering fails quietly.
+        <div
+          role="alert"
+          className="rounded-lg border border-amber-600/40 bg-amber-600/10 px-4 py-3 mb-4 text-sm text-amber-300"
+        >
+          <p className="flex items-center gap-2 font-semibold">
+            <AlertTriangle size={14} /> AI answers are off for this course:{' '}
+            {health.live.problems[0]}
+          </p>
+          {health.live.problems.length > 1 && (
+            <ul className="mt-1 ml-6 list-disc text-amber-300/90">
+              {health.live.problems.slice(1).map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       {loadError && <p className="text-red-400 text-sm mb-4">{loadError}</p>}
       {stalled && anySyncing && (
         <p className="flex items-center gap-2 rounded-lg border border-amber-600/40 bg-amber-600/10 px-4 py-2 mb-4 text-sm text-amber-300">

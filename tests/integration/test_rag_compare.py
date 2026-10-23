@@ -85,3 +85,35 @@ class TestCompareBody:
         body = {k: v for k, v in BASELINE.items() if k != missing}
         r = httpx.post(_url(base_url, course_id), json=body, headers=_headers(staff_token))
         assert r.status_code == 422, r.text
+
+
+class TestRagHealth:
+    """GET /rag/health: what the deploy and grading checklists wait on (§10)."""
+
+    def _url(self, base_url, course_id):
+        return f"{base_url}/api/courses/{course_id}/rag/health"
+
+    def test_students_cannot_read_it(self, base_url, course_id, student_token):
+        r = httpx.get(self._url(base_url, course_id), headers=_headers(student_token))
+        assert r.status_code == 403, r.text
+
+    def test_unknown_course_is_404(self, base_url, admin_token):
+        r = httpx.get(self._url(base_url, 999_999_999), headers=_headers(admin_token))
+        assert r.status_code == 404, r.text
+
+    def test_a_fresh_course_reports_why_it_isnt_ready(self, base_url, course_id, staff_token):
+        # Always 200: the problems are in the body. A course with nothing
+        # ingested is never green, whichever RAG services are running.
+        r = httpx.get(
+            self._url(base_url, course_id),
+            params={"profiles": "type-tailored", "generation_models": "qwen2.5:3b"},
+            headers=_headers(staff_token),
+            timeout=30.0,
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False and body["problems"]
+        assert body["live"]["ok"] is False and body["live"]["problems"]
+        assert [p["name"] for p in body["profiles"]][:2] == ["sliding-window", "type-tailored"]
+        assert [m["model"] for m in body["generation_models"]] == ["qwen2.5:1.5b", "qwen2.5:3b"]
+        assert set(body["services"]) == {"ollama", "infinity", "chromadb"}
