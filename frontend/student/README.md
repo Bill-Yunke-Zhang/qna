@@ -20,8 +20,10 @@ own `package.json`.
 src/
   main.tsx              React root (StrictMode)
   App.tsx               Router, auth guard, header with course picker + logout
-  index.css             Tailwind directives and global styles (with tailwind.config.ts at the app root,
-                        where a theme/colour-token layer would go)
+  index.css             The semantic color tokens for the light and dark themes (T8), plus
+                        global styles; tailwind.config.ts maps them to Tailwind colors
+  lib/theme.ts          useTheme(): the current theme, saved choice or OS preference
+  components/ThemeToggle.tsx  The sun/moon button in the header and on the login page
   lib/
     api.ts              fetch wrapper: adds Bearer token and X-App-Surface: student
     CourseContext.tsx   Which courses the user belongs to and which one is selected
