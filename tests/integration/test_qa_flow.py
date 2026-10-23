@@ -360,3 +360,32 @@ class TestWritesCommitBeforeResponding:
                 assert r.status_code == 204, r.text
                 r = c.get(f"{api}/courses/{course_id}/questions", headers=_headers(token))
                 assert r.status_code == 200, r.text
+
+
+class TestLiveAnswering:
+    def test_question_posts_normally_and_gets_no_ai_answer_without_content(
+        self, base_url, course_id, student_token, category_id
+    ):
+        # create_question schedules answer_question after committing
+        # (docs/design-rag.md §5.4). A fresh course has nothing ingested, so
+        # the task must post nothing, and must never affect the question.
+        import time
+
+        started = time.monotonic()
+        r = httpx.post(
+            f"{base_url}/api/courses/{course_id}/questions",
+            json={"title": "Any AI?", "body": "Nothing is ingested here.",
+                  "category_ids": [category_id]},
+            headers=_headers(student_token),
+        )
+        assert r.status_code == 201, r.text
+        # The answer runs after the response, so posting stays fast.
+        assert time.monotonic() - started < 5
+        qid = r.json()["id"]
+        time.sleep(2)
+        r = httpx.get(
+            f"{base_url}/api/courses/{course_id}/questions/{qid}",
+            headers=_headers(student_token),
+        )
+        assert r.status_code == 200, r.text
+        assert [p for p in r.json()["posts"] if p["author_role"] == "AI"] == []

@@ -27,7 +27,7 @@ from ..schemas.qa import (
     QuestionDetail,
     QuestionSummary,
 )
-from ..services import qa_service
+from ..services import ai_answer_service, qa_service
 from ..services.rag import ingestion
 
 router = APIRouter(tags=["qa"])
@@ -156,9 +156,13 @@ async def create_question(
     body: QuestionCreate,
     member: Annotated[CourseMember, Depends(require_course_member)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    background_tasks: BackgroundTasks,
 ):
     question = await qa_service.create_question(db, course_id, member.user, body)
     await db.commit()
+    # After the commit, so RAG problems can never stop a question being
+    # posted. Every new question, from either app (docs/design-rag.md §5.4).
+    background_tasks.add_task(ai_answer_service.answer_question, course_id, question.id)
     return qa_service.serialize_question_detail(question, member.course_role)
 
 

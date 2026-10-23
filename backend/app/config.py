@@ -66,6 +66,23 @@ class Settings(BaseSettings):
     # The ingestion profile live answering uses (§6.3); also the default for
     # a newly registered source.
     RAG_LIVE_PROFILE: str = "sliding-window"
+    # The rest of live answering's configuration (§5.4, §6.3); the defaults
+    # are the eval baseline. The threshold is provisional until T6 picks one,
+    # and then changes in an MR linked to eval/report.md.
+    RAG_LIVE_ENABLED: bool = True
+    RAG_LIVE_THRESHOLD: float = 0.5
+    RAG_LIVE_MODEL: str = "qwen2.5:1.5b"
+    RAG_LIVE_SYSTEM_PROMPT: str = (
+        "Only use the information provided in the tagged context to answer "
+        "questions. If the context does not contain enough information to "
+        "answer, say so rather than guessing."
+    )
+    # A live answer's whole budget, waiting at the generation gate included;
+    # it also bounds how long a compare call can wait behind one (§5.3).
+    RAG_LIVE_DEADLINE_S: float = 60.0
+    # More live answers than this waiting, and a new question gets none: a
+    # person answers it instead (§5.4).
+    RAG_LIVE_MAX_WAITING: int = 5
 
     # A compare call's total budget from arrival, under the harness's 180 s
     # timeout; past it the endpoint returns the partial answer (§5.3).
