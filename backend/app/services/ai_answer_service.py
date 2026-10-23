@@ -254,6 +254,9 @@ _REFUSAL_START = re.compile(
     r"i (?:do not|don't|cannot|can't|am unable to)"
     r"|i'm (?:sorry|not able|unable)|sorry,"
     r"|(?:the|this) (?:provided |given |tagged )?(?:context|information|material)s?"
+    # qwen2.5 puts the participle after the noun: "The context provided does
+    # not contain…" (found in Bill's eval run, 0/4 caught before).
+    r"(?: (?:provided|given|available))?"
     r" (?:does not|doesn't|do not|don't|is not|isn't|lacks?)"
     r"|there (?:is|isn't) (?:not |no )?(?:enough |sufficient )?information"
     r"|(?:based on|from) the (?:provided |given )?context, i (?:cannot|can't|don't|do not)"
@@ -261,13 +264,24 @@ _REFUSAL_START = re.compile(
     r")",
     re.IGNORECASE,
 )
+# "Midterm 1 is not mentioned in the provided information." The subject comes
+# first, so this can't be a prefix; it counts only as the answer's first and
+# only clause (nothing ending in . ; : before it), so "3 slip days; rollover
+# is not mentioned in the context" is a partial answer and still posts.
+_NOT_IN_CONTEXT = re.compile(
+    r"^\W*[^.;:!?\n]{1,80}?\b(?:is|are) not"
+    r" (?:mentioned|covered|included|provided|found|specified|stated)"
+    r" in the (?:provided |given |available )?(?:context|information|materials?)\b",
+    re.IGNORECASE,
+)
 _REFUSAL_MAX_WORDS = 40
 
 
 def is_refusal(answer: str) -> bool:
-    return (
-        len(answer.split()) < _REFUSAL_MAX_WORDS
-        and _REFUSAL_START.match(answer.strip()) is not None
+    text = answer.strip()
+    return len(text.split()) < _REFUSAL_MAX_WORDS and (
+        _REFUSAL_START.match(text) is not None
+        or _NOT_IN_CONTEXT.match(text) is not None
     )
 
 
