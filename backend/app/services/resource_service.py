@@ -80,24 +80,33 @@ def check_link_base_url(url: str) -> None:
         raise InvalidInputError("link_base_url must be an http(s) URL")
 
 
-async def check_fetch_url(resource_type: str, url: str) -> None:
+async def check_fetch_url(
+    resource_type: str, url: str, repo_branch: str | None = None
+) -> str:
     """
-    The SSRF check (§8) before anything is stored. A repository must also
-    be on GITLAB_HOST: the access token is only ever sent there.
+    The SSRF check (§8) before anything is stored; returns the URL to store.
+    A repository must be an https project on GITLAB_HOST, since the access
+    token is only ever sent there; it is stored as the project's URL
+    (`https://host/group/project`) whatever page of it was pasted.
     """
+    if resource_type == "REPO":
+        try:
+            url = fetchers.gitlab_project_url(url)
+            fetchers.check_branch(repo_branch or "")
+        except fetchers.FetchError as exc:
+            raise InvalidInputError(str(exc)) from None
     try:
         await fetchers.check_url(url)
     except fetchers.UnsafeURL as exc:
         raise InvalidInputError(str(exc)) from None
-    if resource_type == "REPO":
-        if urlsplit(url).hostname != settings.GITLAB_HOST:
-            raise InvalidInputError(
-                f"repository URLs must be on {settings.GITLAB_HOST}"
-            )
-        # The shallow-clone loader isn't built yet.
-        raise InvalidInputError(
-            "registering a repository by URL isn't supported yet; upload a zip"
-        )
+    return url
+
+
+def sync_loader(resource: Resource) -> ingestion.Loader:
+    """How a URL resource is fetched when its sync runs."""
+    if resource.type == "REPO":
+        return ingestion.repo_loader(resource)
+    return ingestion.web_page_loader(resource)
 
 
 async def require_course(db: AsyncSession, course_id: int) -> None:

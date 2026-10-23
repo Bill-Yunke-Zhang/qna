@@ -18,18 +18,22 @@ the same check on each. Responses are capped in size.
 from __future__ import annotations
 
 import asyncio
+import base64
 import html as html_lib
 import io
 import ipaddress
 import json
+import os
 import re
 import socket
 import stat
+import tempfile
+import time
 import zipfile
 import zlib
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 from pypdf import PdfReader
@@ -615,6 +619,217 @@ def _read_entry(
     ):
         raise UploadError(f"could not read {path} from the zip") from None
     return bytes(body)
+
+
+# ── Repositories ─────────────────────────────────────────────────────────────
+#
+# A shallow, blobless clone with no checkout: git lists the commit's tree and
+# only the .md and .pdf blobs are fetched and read, so nothing is written to
+# a working tree (no symlink or path can point outside it) and a huge repo
+# only costs its tree listing. The token goes to GITLAB_HOST alone, in a
+# host-scoped header passed through GIT_CONFIG_* env vars: never in the URL,
+# the arguments, .git/config or error text (design-rag §8).
+
+# An ordinary file in git's tree; 120000 is a symlink, 160000 a submodule.
+_GIT_FILE_MODES = ("100644", "100755")
+# A branch name we can pass to git as is.
+_BRANCH = re.compile(r"^(?![-/])(?!.*\.\.)(?!.*//)[A-Za-z0-9._/-]{1,255}(?<![/.])$")
+
+
+@dataclass(frozen=True)
+class ClonedRepo:
+    files: list[UploadedFile]
+    commit_sha: str
+
+
+def gitlab_project_url(url: str) -> str:
+    """
+    The project's web URL, `https://{GITLAB_HOST}/{group}/{project}`, from
+    what staff paste: the project page, its `.git` clone URL, or a page inside
+    it (`.../-/tree/main`). Raises `FetchError` for anything else.
+    """
+    parts = urlsplit(url.strip())
+    if parts.scheme != "https" or parts.hostname != settings.GITLAB_HOST:
+        raise FetchError(
+            f"repository URLs must start with https://{settings.GITLAB_HOST}/"
+        )
+    if parts.port is not None or parts.username or parts.password:
+        raise FetchError("the repository URL can't have a port or a user name")
+    path = parts.path.split("/-/", 1)[0].strip("/").removesuffix(".git")
+    segments = path.split("/")
+    if len(segments) < 2 or any(s in ("", ".", "..") for s in segments):
+        raise FetchError("the URL must point at a project: https://host/group/project")
+    return f"https://{settings.GITLAB_HOST}/{path}"
+
+
+def check_branch(branch: str) -> None:
+    if not _BRANCH.match(branch):
+        raise FetchError(f"{branch!r} isn't a branch name we can clone")
+
+
+def repo_blob_base(project_url: str, branch: str) -> str:
+    """Where a registered repo's files are viewed: `.../-/blob/{branch}` (§3.1)."""
+    return f"{project_url}/-/blob/{quote(branch, safe='/')}"
+
+
+def _git_env(home: str) -> dict[str, str]:
+    """A clean environment: no user or system config, no prompts, no LFS."""
+    config = [
+        ("http.followRedirects", "false"),
+        ("protocol.allow", "never"),
+        ("protocol.https.allow", "always"),
+        ("credential.helper", ""),
+    ]
+    if token := settings.GITLAB_ACCESS_TOKEN:
+        basic = base64.b64encode(f"oauth2:{token}".encode()).decode()
+        # Scoped to the host, unlike plain http.extraHeader.
+        config.append(
+            (
+                f"http.https://{settings.GITLAB_HOST}/.extraHeader",
+                f"Authorization: Basic {basic}",
+            )
+        )
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "HOME": home,
+        "LC_ALL": "C",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_COUNT": str(len(config)),
+    }
+    for i, (key, value) in enumerate(config):
+        env[f"GIT_CONFIG_KEY_{i}"] = key
+        env[f"GIT_CONFIG_VALUE_{i}"] = value
+    return env
+
+
+# What git prints when GitLab wants credentials it didn't get or rejected.
+_AUTH_FAILURES = (
+    "could not read Username",
+    "Authentication failed",
+    "HTTP Basic: Access denied",
+    "The requested URL returned error: 403",
+)
+
+
+def _scrub(text: str) -> str:
+    """Belt and braces: git never sees the token in text it could print."""
+    if token := settings.GITLAB_ACCESS_TOKEN:
+        basic = base64.b64encode(f"oauth2:{token}".encode()).decode()
+        text = text.replace(token, "***").replace(basic, "***")
+    return text
+
+
+async def _git(env: dict[str, str], cwd: str, deadline: float, *args: str) -> bytes:
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        *args,
+        cwd=cwd,
+        env=env,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(
+            proc.communicate(), timeout=max(deadline - time.monotonic(), 0.1)
+        )
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise FetchError(
+            f"cloning the repository took longer than "
+            f"{settings.REPO_CLONE_TIMEOUT_S:.0f} s"
+        ) from None
+    if proc.returncode != 0:
+        text = err.decode("utf-8", "replace")
+        if any(s in text for s in _AUTH_FAILURES):
+            raise FetchError(
+                "GitLab refused access: the repository is private and "
+                "GITLAB_ACCESS_TOKEN is missing or can't read it"
+            )
+        lines = text.strip().splitlines()
+        reason = _scrub(lines[-1]) if lines else f"exit code {proc.returncode}"
+        raise FetchError(f"git {args[0]} failed: {reason}")
+    return out
+
+
+def _tree_entries(listing: bytes) -> list[tuple[str, str, str, int, str]]:
+    """`git ls-tree -r -l -z`: mode, type, object id, size, path."""
+    entries = []
+    for record in listing.split(b"\0"):
+        if not record:
+            continue
+        meta, _, path = record.decode("utf-8", "replace").partition("\t")
+        mode, kind, obj, size = meta.split()
+        entries.append((mode, kind, obj, int(size) if size.isdigit() else 0, path))
+    return entries
+
+
+async def clone_repo(project_url: str, branch: str) -> ClonedRepo:
+    """
+    The `.md` and `.pdf` files at the tip of `branch`, with the commit SHA.
+    Symlinks and submodules are skipped. The same limits as a zip upload
+    apply (file count, per-file and total size), and the whole operation has
+    `REPO_CLONE_TIMEOUT_S`. Raises `FetchError`.
+    """
+    check_branch(branch)
+    deadline = time.monotonic() + settings.REPO_CLONE_TIMEOUT_S
+    with tempfile.TemporaryDirectory(prefix="qna-repo-") as home:
+        env = _git_env(home)
+        repo = os.path.join(home, "repo")
+        await _git(
+            env,
+            home,
+            deadline,
+            "clone",
+            "--depth=1",
+            "--single-branch",
+            "--no-tags",
+            "--no-checkout",
+            "--filter=blob:none",
+            f"--branch={branch}",
+            "--",
+            f"{project_url}.git",
+            repo,
+        )
+        sha = (await _git(env, repo, deadline, "rev-parse", "HEAD")).decode().strip()
+        listing = await _git(env, repo, deadline, "ls-tree", "-r", "-l", "-z", "HEAD")
+
+        files: list[UploadedFile] = []
+        total = 0
+        for mode, kind, obj, size, path in sorted(
+            _tree_entries(listing), key=lambda e: e[4]
+        ):
+            if (
+                kind != "blob"
+                or mode not in _GIT_FILE_MODES
+                or not path.lower().endswith(ZIP_MEMBER_TYPES)
+            ):
+                continue
+            if len(files) == settings.UPLOAD_MAX_FILES:
+                raise FetchError(
+                    f"the repository has more than {settings.UPLOAD_MAX_FILES} "
+                    ".md and .pdf files"
+                )
+            if size > settings.UPLOAD_MAX_ENTRY_BYTES:
+                raise FetchError(
+                    f"{path} is larger than "
+                    f"{settings.UPLOAD_MAX_ENTRY_BYTES // (1024 * 1024)} MB"
+                )
+            total += size
+            if total > settings.UPLOAD_MAX_UNCOMPRESSED_BYTES:
+                raise FetchError(
+                    "the repository's .md and .pdf files add up to more than "
+                    f"{settings.UPLOAD_MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB"
+                )
+            data = await _git(env, repo, deadline, "cat-file", "blob", obj)
+            files.append(UploadedFile(path, data))
+    if not files:
+        raise FetchError(f"the {branch} branch has no .md or .pdf files")
+    return ClonedRepo(files, sha)
 
 
 # ── PDFs ─────────────────────────────────────────────────────────────────────
