@@ -63,6 +63,9 @@ async def _accepted(db: AsyncSession, resource: Resource) -> dict:
 
 @router.get("/resources", response_model=ResourceListResponse)
 async def list_resources(course_id: int, _: Staff, db: Db) -> dict:
+    # An admin passes the staff check for any course id; an unknown one is
+    # a 404, not an empty course.
+    await resource_service.require_course(db, course_id)
     return await resource_service.list_resources(db, course_id)
 
 
