@@ -235,7 +235,10 @@ def citations_from(chunks: Sequence[pipeline.RetrievedChunk]) -> list[dict[str, 
         citations.append(
             {
                 "rank": len(citations) + 1,
-                "label": meta.get("label") or chunk.source_url,
+                # Citation.label allows 500 characters; a longer one (a deep
+                # heading path, a long thread title) would fail validation and
+                # lose the whole answer.
+                "label": _clip(meta.get("label") or chunk.source_url, 500),
                 "resource_type": chunk.resource_type,
                 "similarity_score": round(chunk.similarity_score, 4),
                 key[0]: key[1],
@@ -250,16 +253,21 @@ def citations_from(chunks: Sequence[pipeline.RetrievedChunk]) -> list[dict[str, 
 # the start and only when short, so "The syllabus doesn't cover X, but Y..."
 # still posts (§5.3). Tune from the answers in eval/report.md.
 _REFUSAL_START = re.compile(
-    r"^\W*(?:"
-    r"i (?:do not|don't|cannot|can't|am unable to)"
+    r"^\W*"
+    # An apology or "unfortunately" in front ("Unfortunately, the provided
+    # context does not…", "I am sorry, but I cannot…").
+    r"(?:(?:unfortunately|sorry|i'm sorry|i am sorry)[,.]?\s+(?:but\s+)?)?"
+    r"(?:"
+    r"i (?:do not|don't|cannot|can't|am unable to|am not able to)"
     r"|i'm (?:sorry|not able|unable)|sorry,"
+    r"|(?:based on|from|according to) the (?:provided |given )?(?:context|information|materials?)"
+    r"(?: provided)?, (?:i (?:cannot|can't|don't|do not)|there (?:is|are) (?:no|not))"
     r"|(?:the|this) (?:provided |given |tagged )?(?:context|information|material)s?"
     # qwen2.5 puts the participle after the noun: "The context provided does
     # not contain…" (found in Bill's eval run, 0/4 caught before).
     r"(?: (?:provided|given|available))?"
     r" (?:does not|doesn't|do not|don't|is not|isn't|lacks?)"
     r"|there (?:is|isn't) (?:not |no )?(?:enough |sufficient )?information"
-    r"|(?:based on|from) the (?:provided |given )?context, i (?:cannot|can't|don't|do not)"
     r"|not enough information"
     r")",
     re.IGNORECASE,
@@ -278,11 +286,16 @@ _REFUSAL_MAX_WORDS = 40
 
 
 def is_refusal(answer: str) -> bool:
-    text = answer.strip()
+    # Models often write curly apostrophes ("don’t"); the patterns use '.
+    text = answer.strip().replace("’", "'").replace("‘", "'")
     return len(text.split()) < _REFUSAL_MAX_WORDS and (
         _REFUSAL_START.match(text) is not None
         or _NOT_IN_CONTEXT.match(text) is not None
     )
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 def _warn_config_once(course_id: int, exc: pipeline.PipelineError) -> None:

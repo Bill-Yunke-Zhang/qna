@@ -276,6 +276,12 @@ def test_citations_are_the_best_three_distinct_sources():
         "The information given doesn't say when P4 is due.",
         "The provided materials do not cover regrades.",
         "Office hours are not covered in the context.",
+        # From the review of main (10/23): a lead-in, "there is no", curly quotes.
+        "Unfortunately, the provided context does not mention the midterm date.",
+        "Based on the provided context, there is no information about the midterm.",
+        "I am sorry, but I cannot find that in the material.",
+        "I don’t have enough information to answer that.",
+        "The context doesn’t say when P4 is due.",
     ],
 )
 def test_short_refusals_are_suppressed(answer):
@@ -298,7 +304,19 @@ def test_short_refusals_are_suppressed(answer):
         "Slip days: 5. Whether they roll over is not covered in the information.",
         # The participle form with no refusal in it.
         "The context provided shows that each student gets 5 slip days.",
+        # An answer that only starts like an apology.
+        "Unfortunately, slip days can't be used on the Final Project.",
     ],
 )
 def test_real_and_partial_answers_are_posted(answer):
     assert not svc.is_refusal(answer)
+
+
+def test_an_overlong_label_is_clipped_not_fatal():
+    # Citation.label allows 500 characters; a longer one used to fail
+    # create_ai_post's validation and lose the whole answer.
+    (cite,) = svc.citations_from(
+        [chunk(label="Course repo › " + "deep heading › " * 50)]
+    )
+    assert len(cite["label"]) == 500 and cite["label"].endswith("…")
+    AICitations.model_validate({"citations": [cite]})
