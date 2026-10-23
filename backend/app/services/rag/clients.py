@@ -272,6 +272,38 @@ async def get_chunk_metadata(
     return list(result.get("metadatas") or [])
 
 
+@dataclass(frozen=True)
+class Hit:
+    """One query result: the stored text and metadata, and its cosine
+    distance (collections use cosine space, so similarity = 1 - distance)."""
+
+    text: str
+    metadata: dict[str, Any]
+    distance: float
+
+
+async def query_chunks(
+    collection: Any, embedding: list[float], n: int, where: dict[str, Any]
+) -> list[Hit]:
+    """The `n` nearest chunks matching `where`, nearest first."""
+    try:
+        result = await collection.query(
+            query_embeddings=[embedding],
+            n_results=n,
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as exc:
+        raise ServiceUnavailable("chromadb", _describe(exc)) from exc
+    documents = (result.get("documents") or [[]])[0]
+    metadatas = (result.get("metadatas") or [[]])[0]
+    distances = (result.get("distances") or [[]])[0]
+    return [
+        Hit(text or "", dict(meta or {}), float(dist))
+        for text, meta, dist in zip(documents, metadatas, distances, strict=True)
+    ]
+
+
 async def delete_chunks(collection: Any, where: dict[str, Any]) -> None:
     try:
         await collection.delete(where=where)
