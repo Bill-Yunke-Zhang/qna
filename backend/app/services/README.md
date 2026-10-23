@@ -9,7 +9,7 @@ HTTP requests or responses.
 | File | What it owns | Called from |
 |---|---|---|
 | `qa_service.py` | Categories, questions, posts, accepting answers, retracting AI answers, closing and reopening threads, and the response serializers | `routers/qa.py` |
-| `ai_answer_service.py` | `create_ai_post`, the only code that writes an AI post (validates its citations); the pipeline's `answer_question` task comes with the pipeline | the AI answer task |
+| `ai_answer_service.py` | `answer_question`, the live background task: runs the pipeline with the `RAG_LIVE_*` settings and posts a matched, non-refusal answer if the thread is still open with no AI, accepted or staff answer; skipped during compare traffic and past `RAG_LIVE_MAX_WAITING`; never raises. `create_ai_post`, the only code that writes an AI post (validates its citations) | `routers/qa.create_question` (background task) |
 | `auth_service.py` | Password hashing, JWT creation and decoding, user lookup and creation, roster-based access sync | `routers/auth.py`, `routers/admin.py`, `common/dependencies.py`, `bootstrap.py` |
 | `roster_service.py` | Student roster import (Canvas CSV or pre-mapped JSON rows) | `routers/admin.py` |
 | `staff_service.py` | Staff CSV import | `routers/admin.py` |

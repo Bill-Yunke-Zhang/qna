@@ -590,11 +590,11 @@ on 2026-10-17.
 | `services/rag/clients.py` | Thin async wrappers around Infinity (embed), ChromaDB (collections, add, query, delete) and Ollama (chat, list models), with timeouts. **The only code that talks to these services**, and the place to mock them in tests. |
 | `services/rag/profiles.py` | The fixed list of ingestion profiles (§6.2). |
 | `services/rag/prompt.py` | Builds the tagged context and escapes our tag names (§5.5). |
-| `services/rag/pipeline.py` | `RagConfig`, `RagResult`, `run()`, `is_refusal()`. |
+| `services/rag/pipeline.py` | `RagConfig`, `RagResult`, `run()`. |
 | `services/rag/chunking.py` | Structural splitting per type plus the profile's fallback chunker. |
 | `services/rag/fetchers.py` | Web fetch with the address check, shallow clone, upload/zip parsing, historical Q&A reader. |
 | `services/rag/ingestion.py` | The ingestion task and sync registry: claim, fetch, chunk, embed, insert, switch, clean up. |
-| `services/ai_answer_service.py` | The live background task and `create_ai_post`. |
+| `services/ai_answer_service.py` | The live background task (`answer_question`), `is_refusal()` (only the live path uses it) and `create_ai_post`. |
 | `services/resource_service.py` | Resource create/list/delete and `index_syncs` reads. |
 | `routers/rag.py` | `POST /courses/{course_id}/rag/compare`. |
 | `routers/resources.py` | Resource management and Q&A re-index endpoints. |
