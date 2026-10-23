@@ -12,6 +12,7 @@ themselves live in [`../services/`](../services/).
 | `auth.py` | `/api/auth` | none (it issues the tokens) | all three apps |
 | `admin.py` | `/api/admin` | `require_admin` on every route | Admin app |
 | `qa.py` | `/api/courses` | `get_current_user`, `require_course_member` or `require_course_staff` | Student and Staff apps |
+| `rag.py` | `/api/courses/{course_id}/rag` | `require_course_staff` | `eval/compare_harness.py` |
 
 ## Transactions
 
@@ -104,6 +105,26 @@ Renaming a category with `PATCH` doesn't check for duplicates the way `POST`
 does, and the handler doesn't commit itself. A clash only fails at the
 `(course_id, name)` unique constraint when `get_db` commits at the end of the
 request, so the client doesn't get a clean 409.
+
+## `rag.py`
+
+`POST /{course_id}/rag/compare` runs one question through the RAG pipeline
+with the configuration in the body and returns the fixed T6 contract
+(`schemas/rag.py`). The course's harness calls it as the `grader` admin. It
+creates no rows.
+
+The harness aborts the whole run on any error status, so every failure is
+explicit, never a quiet `matched: false`:
+
+| Cause | Status |
+|---|---|
+| Unknown `ingestion_profile`, or `generation_model` not pulled | 422 |
+| No such course, or nothing ingested under that profile | 404 |
+| The collection was built with a different profile definition | 409 |
+| Ollama, Infinity or ChromaDB unreachable | 503 |
+
+A generation that runs out of the time budget (`RAG_COMPARE_BUDGET_S`) is
+returned as a `200` with the partial answer, and logged.
 
 ## Adding a router
 

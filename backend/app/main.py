@@ -12,7 +12,7 @@ from .common.logging import configure_logging
 from .common.rate_limit import limiter
 from .config import settings
 from .redis_client import close_redis, get_redis
-from .routers import admin, auth, health, qa, resources
+from .routers import admin, auth, health, qa, rag, resources
 from .services.bootstrap import bootstrap_admin
 
 configure_logging()
@@ -55,3 +55,4 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(qa.router, prefix="/api")
 app.include_router(resources.router, prefix="/api")
+app.include_router(rag.router, prefix="/api")

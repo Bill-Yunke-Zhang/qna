@@ -217,7 +217,16 @@ Type-specific location metadata and how `citation_url` is built:
 | Syllabus / schedule (web page) | `heading_path`, `fragment_start`, `fragment_end`, optional `fragment_prefix` | `{page}#:~:text={prefix}-,{start},{end}` (prefix part only when set) |
 | Repo markdown | `file_path`, `line_start`, `line_end`, `heading_path`, `commit_sha` | `{base}/{path}?plain=1#L{start}-L{end}` |
 | Repo PDF | `file_path`, `page_start`, `page_end`, `commit_sha` | `{raw_base}/{path}#page={page_start}` |
-| Historical Q&A | `question_id`, `accepted_post_id` | none stored; each frontend builds the link to its own thread page (§0) from `question_id` when it renders the citation |
+| Historical Q&A | `question_id`, `accepted_post_id`, `answer_start` | none stored; each frontend builds the link to its own thread page (§0) from `question_id` when it renders the citation |
+
+**Historical Q&A chunk text.** The stored text is the question body, a blank
+line, then the accepted answer; `answer_start` is the character offset where
+the answer begins, so `prompt.build` can fill `<question>` and
+`<accepted_answer>` separately (§5.5) without guessing where one ends. The
+thread's title isn't in the stored text: it's the chunk's heading, so it is
+embedded with the chunk and appears in the label ("Past question › {title}"),
+which becomes the tag's `title`. *(Added 2026-10-20 with Q&A ingestion; this
+row was updated 2026-10-22.)*
 
 **`{base}`** is where a resource's files are viewed:
 - a registered repo: `{gitlab_project_url}/-/blob/{repo_branch}`;

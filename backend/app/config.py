@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # a newly registered source.
     RAG_LIVE_PROFILE: str = "sliding-window"
 
+    # A compare call's total budget from arrival, under the harness's 180 s
+    # timeout; past it the endpoint returns the partial answer (§5.3).
+    RAG_COMPARE_BUDGET_S: float = 150.0
+    # Live answering pauses while a compare call runs and for this long after
+    # the last one ends, so a harness run isn't slowed by live generations.
+    RAG_COMPARE_QUIET_S: float = 60.0
+
     # The only host repository URLs may point at, and the only host the
     # GitLab access token is ever sent to (§8).
     GITLAB_HOST: str = "git.doit.wisc.edu"

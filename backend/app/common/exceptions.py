@@ -44,6 +44,15 @@ class InvalidInputError(QnaError):
         super().__init__("INVALID_INPUT", message, status.HTTP_422_UNPROCESSABLE_ENTITY)
 
 
+class ServiceUnavailableError(QnaError):
+    """A service the request needs (e.g. Ollama) can't be reached (503)."""
+
+    def __init__(self, message: str = "Service unavailable"):
+        super().__init__(
+            "SERVICE_UNAVAILABLE", message, status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+
+
 class PayloadTooLargeError(QnaError):
     def __init__(self, message: str = "Payload too large"):
         super().__init__(

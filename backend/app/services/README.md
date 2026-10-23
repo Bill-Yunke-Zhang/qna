@@ -171,6 +171,15 @@ RAG work (ingestion, retrieval, answer generation) lives in `rag/` (layout in
   `parse_upload` (so a bad file is a 422); `historical_qa_loader(course_id)`
   for the `historical_qa` source, one atomic chunk per thread.
   `drop_qa_thread` is the §4.6 un-accept cleanup.
+- `rag/pipeline.py`: the shared pipeline's contract: `RagConfig`,
+  `RagResult`, `RetrievedChunk` and the errors `run()` raises
+  (`UnknownProfile`, `ModelNotAvailable`, `ProfileNotIngested`,
+  `ProfileStale`). `run()` itself comes with retrieval and the prompt.
+- `rag/compare.py`: what the compare endpoint adds around `run()`: its time
+  budget (`deadline`, `RAG_COMPARE_BUDGET_S`), VM-wide CPU use for the
+  request (`CpuWindow`), and a record of compare traffic (`tracking`,
+  `active_or_ended_within`) that live answering checks against
+  `RAG_COMPARE_QUIET_S` to pause during a harness run.
 
 Follow the
 same rules: take an `AsyncSession`, flush without committing, raise
