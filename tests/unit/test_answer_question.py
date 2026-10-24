@@ -282,6 +282,11 @@ def test_citations_are_the_best_three_distinct_sources():
         "I am sorry, but I cannot find that in the material.",
         "I don’t have enough information to answer that.",
         "The context doesn’t say when P4 is due.",
+        # qwen2.5 naming the source instead of "the context" (live board, 10/24).
+        "The syllabus does not provide information about the midterm date.",
+        "The schedule does not provide information about office hours",
+        "The course repo doesn't contain any information about regrades.",
+        "The syllabus and schedule do not provide specific details on late labs.",
     ],
 )
 def test_short_refusals_are_suppressed(answer):
@@ -306,6 +311,14 @@ def test_short_refusals_are_suppressed(answer):
         "The context provided shows that each student gets 5 slip days.",
         # An answer that only starts like an apology.
         "Unfortunately, slip days can't be used on the Final Project.",
+        # "does not provide information" only counts as the whole answer.
+        "The syllabus does not provide information about regrades, but the rubric says to email your TA.",
+        "The schedule doesn't give details on labs; they are posted on Canvas.",
+        "The syllabus does not provide information about the midterm. It is on Oct 30.",
+        "Slip days: 5. The syllabus does not provide information about rollover.",
+        "The syllabus does not provide information about rollover, however slip days are 5.",
+        # A real answer that just reads like one.
+        "The Project 1 starter code does not include the CLAUDE.md file.",
     ],
 )
 def test_real_and_partial_answers_are_posted(answer):
