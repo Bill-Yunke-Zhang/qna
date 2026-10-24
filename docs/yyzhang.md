@@ -1,8 +1,5 @@
 # Bill Zhang (yyzhang): Project 3 individual document
 
-> **Draft.** Sections marked _TODO_ get filled in after the harness runs
-> against the deployment (`eval/report.md`).
-
 ## 1. Repository and Codebase Organization
 
 The repository is a Piazza-style course board with three single-page apps in
@@ -188,17 +185,85 @@ score. q06 is a real miss: under `sliding-window`, the right file isn't in
 the top 5. On q06 all three prompts produced a confident, wrong answer, the
 quote-grounded one included. Prompt wording doesn't rescue a retrieval miss.
 
-_TODO after the deployment run:_ hit rate, no-match accuracy and latency
-per run from `eval/report.md`; which single change made the biggest
-difference to answer quality and at what cost (expected: type-tailored for
-the PDF questions, and gte-Qwen2 for q06's vocabulary gap at much higher
-embedding latency); and whether that matched my intuition.
+**Deployment results** (`eval/report.md`; the production VM, 4 vCPU and 16
+GB, on 10/24). Yuthika ran the harness: 126 calls, all 200. Hit rates are
+out of 13, so q12 and q13, which the harness can't score, cost every run
+2/13.
+
+| Run | Hit rate | No-match | Avg wall-clock |
+|---|---|---|---|
+| baseline | 77% | 100% | 20.6 s |
+| type-tailored-chunking | 85% | 100% | 11.9 s |
+| gte-qwen2-last-token | 85% | 100% | 26.9 s |
+| bge-small-cls | 85% | **0%** | 23.9 s |
+| threshold-0.55-conservative | 38% | 100% | 3.8 s |
+| untrusted-context-prompt | 77% | 100% | 20.0 s |
+| quote-grounded-prompt | 77% | 100% | 19.7 s |
+| qwen2.5-3b-larger | 77% | 100% | 43.3 s |
+| llama3.2-1b-other-family | 77% | 100% | 24.5 s |
+
+We split reading the answers: Yuthika took the baseline, chunking and
+prompts, and I took the embedding, threshold and generation-model runs.
+What I found, reading every answer in those runs against the expected one:
+
+- **Embeddings.** Both alternatives fix q06's retrieval. The baseline
+  retrieves the wrong files there and invents a list of "missing" files.
+  The answers stay vague even so: gte-Qwen2 says only that there is "a
+  planted bug", not that it's the parallax scrolling. Both cut q10 to a
+  bare "No" without the reason, which the baseline gives. **bge-small
+  breaks the no-match guard.** Its top similarity for the off-topic q14
+  ("best pizza topping") is 0.49, over the 0.40 threshold. The model then
+  ignores the context and answers about pizza from its own knowledge.
+  Cosine scores aren't comparable across embedding models, so a threshold
+  tuned on MiniLM doesn't carry over. Each model needs its own.
+- **Threshold 0.55.** It answers 5 of 13. It refuses q04 ("When is P3
+  due?"), the most common kind of question, because the baseline's best
+  match for it scores 0.53. It's fast because it rarely generates, but it
+  isn't useful to students. This confirms my local measurement: on MiniLM,
+  0.55 is above where the correct sources score.
+- **Generation models.** `qwen2.5:3b` gives the most complete answers
+  (q02, q03, q10, q11). On q06, where retrieval is wrong, it says the
+  information isn't there instead of inventing an answer, which is better
+  than the 1.5b baseline. But it drops "11:59 PM" from q04, and it takes
+  twice as long (43 s vs. 20 s). `llama3.2:1b` is the weakest. Its q05
+  contradicts itself, its q06 cites an unrelated rubric item (R12), and it
+  hedges on q10, which the context answers.
+- **Shared across runs.** Every configuration gets q05 wrong ("3 services",
+  "Redis was added"). The top chunks are Lecture 9's Compose material, not
+  Lecture 13's, and a bigger generator can't fix that. q12 and q13 show as
+  misses only because their source is a past Q&A thread. Their answers are
+  correct.
+
+**The biggest single difference** was type-tailored chunking. It has the
+same hit rate as the two new embedding models, but it is the fastest
+answering run, at about half the baseline's latency (I haven't checked
+why; shorter retrieved contexts are my guess). It also keeps the no-match
+guard, and it answers q10 fully. I expected gte-Qwen2 to be the winner for
+q06's vocabulary gap. Retrieval-wise it was, but chunking got the same hits
+with the small MiniLM model, while gte-Qwen2 is the largest model Infinity
+loads and the slowest to embed. The generation model
+mattered less than I thought. A bigger model writes more complete answers
+but can't fix wrong retrieval, which matches what the prompts showed
+locally.
+
+**On the VM**, measured during a `qwen2.5:3b` compare call (the largest
+model) with all three embedding models loaded: the peak was 8.1 GB of
+15.6 GB, with no swap (Infinity 4.5 GB, Ollama 2.3 GB, MySQL 0.4 GB). The
+idle baseline was 6.0 GB. `compare_answer_truncated` didn't appear in the
+backend log from the deploy through the harness run, and none of the 126
+answers ends mid-sentence. One setting isn't in the code defaults: the VM
+sets `RAG_SERVICE_TIMEOUT_S=300`, because a gte-Qwen2 ingestion batch takes
+over 60 s on 4 CPUs. !43 documents it in `.env.template`.
+
+`eval/report.json` and `eval/report.md` (about 6,700 lines) are the
+harness's output, not hand-written, and they're committed under Yuthika's
+name because she ran the harness.
 
 ## 4. AI Tools Used
 
 **Claude Code, my main working session** (the desktop app's Code tab, in
 `~/qna-69`). It's logged automatically as
-[`ai_log/*_dd7b27ca.md`](../ai_log/), 146 entries from 10/12 to 10/23.
+[`ai_log/*_dd7b27ca.md`](../ai_log/), about 160 entries from 10/12 to 10/24.
 What I used it for:
 
 - **Reviewing every one of Yuthika's MRs.** It merged the branch with `main`
@@ -273,7 +338,7 @@ project.
   compare endpoint that only reads means it can't create rows. A repo clone
   with no working tree means no symlink can escape.
 - **Local model serving is a resource budget.** Three embedding models plus
-  Ollama on a 16 GB, 4-vCPU VM (_TODO: measured peak_), generation at
+  Ollama on a 16 GB, 4-vCPU VM (8.1 GB peak with the 3b model), generation at
   5–30 s per answer on a laptop, and model swaps that show up in latency.
   Timeouts, a single generation gate and pausing live answers during a
   harness run all come from that budget.
