@@ -43,6 +43,9 @@ async def compare_configuration(
 ) -> dict:
     arrival = time.monotonic()
     await resource_service.require_course(db, course_id)
+    # The pipeline opens its own sessions; don't hold a pooled connection
+    # idle through up to RAG_COMPARE_BUDGET_S of retrieval and generation.
+    await db.close()
     config = pipeline.RagConfig(
         ingestion_profile=body.ingestion_profile,
         similarity_threshold=body.similarity_threshold,
@@ -125,8 +128,11 @@ async def rag_health(
     ones are always checked. Always 200: problems are in the body.
     """
     await resource_service.require_course(db, course_id)
+    rows = await health.load_index_syncs(db, course_id)
+    # Released before the service checks, which can take seconds each.
+    await db.close()
     return await health.course_health(
-        db,
+        rows,
         course_id,
         profiles=resource_service.parse_profiles_field(profiles) or [],
         generation_models=resource_service.parse_profiles_field(generation_models)

@@ -17,6 +17,7 @@ grading checklists wait for (§10).
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
@@ -31,16 +32,21 @@ from . import clients
 from .profiles import PROFILES
 
 
+async def load_index_syncs(db: AsyncSession, course_id: int) -> list[IndexSync]:
+    """The course's sync rows: the only DB read, done before the service
+    checks so the caller can release its session first."""
+    return list(
+        await db.scalars(select(IndexSync).where(IndexSync.course_id == course_id))
+    )
+
+
 async def course_health(
-    db: AsyncSession,
+    rows: Sequence[IndexSync],
     course_id: int,
     profiles: Sequence[str] = (),
     generation_models: Sequence[str] = (),
 ) -> dict[str, Any]:
     services = await clients.health()
-    rows = list(
-        await db.scalars(select(IndexSync).where(IndexSync.course_id == course_id))
-    )
     by_profile: dict[str, list[IndexSync]] = defaultdict(list)
     for row in rows:
         by_profile[row.profile].append(row)
@@ -53,13 +59,15 @@ async def course_health(
     names = list(
         dict.fromkeys([settings.RAG_LIVE_PROFILE, *profiles, *sorted(by_profile)])
     )
-    profile_reports = []
-    for name in names:
-        report = await _profile_health(
-            course_id, name, by_profile.get(name, []), services
+    # One ChromaDB round trip each, independent: run them together.
+    profile_reports = await asyncio.gather(
+        *(
+            _profile_health(course_id, name, by_profile.get(name, []), services)
+            for name in names
         )
-        profile_reports.append(report)
-        problems += [f"profile {name!r}: {p}" for p in report["problems"]]
+    )
+    for report in profile_reports:
+        problems += [f"profile {report['name']!r}: {p}" for p in report["problems"]]
 
     models = list(dict.fromkeys([settings.RAG_LIVE_MODEL, *generation_models]))
     model_reports = [_model_health(m, services["ollama"]) for m in models]

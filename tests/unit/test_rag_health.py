@@ -76,7 +76,30 @@ def env(monkeypatch):
 
 
 async def check(rows, **kw):
-    return await health.course_health(FakeDB(rows), COURSE, **kw)
+    return await health.course_health(rows, COURSE, **kw)
+
+
+async def test_load_index_syncs_reads_the_course_rows():
+    rows = ingested()
+    assert await health.load_index_syncs(FakeDB(rows), COURSE) == rows
+
+
+async def test_profiles_are_checked_concurrently(env, monkeypatch):
+    # One ChromaDB round trip per profile; they shouldn't queue behind each other.
+    import asyncio
+
+    running = {"now": 0, "max": 0}
+
+    async def slow_get_collection(name):
+        running["now"] += 1
+        running["max"] = max(running["max"], running["now"])
+        await asyncio.sleep(0.01)
+        running["now"] -= 1
+        return None
+
+    monkeypatch.setattr(clients, "get_collection", slow_get_collection)
+    await check([], profiles=["type-tailored", "embedding-alt", "embedding-cls"])
+    assert running["max"] == 4
 
 
 async def test_green_when_everything_is_in_place(env):
