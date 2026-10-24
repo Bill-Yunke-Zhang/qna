@@ -199,6 +199,22 @@ def _ms(start: float) -> float:
     return round((time.monotonic() - start) * 1000, 1)
 
 
+def _budget(deadline: float) -> float:
+    """
+    The timeout for one service call before generation: what's left of the
+    caller's budget, never more than RAG_SERVICE_TIMEOUT_S. Without it each
+    call could take the full service timeout and together run a compare call
+    past the harness's limit. Raises ServiceUnavailable once the budget is
+    gone, rather than starting a call that can't finish.
+    """
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise clients.ServiceUnavailable(
+            "pipeline", "time budget used up before generation"
+        )
+    return min(settings.RAG_SERVICE_TIMEOUT_S, left)
+
+
 async def run(
     course_id: int,
     question_text: str,
@@ -218,10 +234,12 @@ async def run(
     profile = PROFILES.get(config.ingestion_profile)
     if profile is None:
         raise UnknownProfile(config.ingestion_profile)
-    if not await clients.has_model(config.generation_model):
+    if not await clients.has_model(config.generation_model, timeout=_budget(deadline)):
         raise ModelNotAvailable(config.generation_model)
     question = question_text[: settings.QUESTION_MAX_CHARS]
-    collection = await clients.get_collection(profile.collection_name(course_id))
+    collection = await clients.get_collection(
+        profile.collection_name(course_id), timeout=_budget(deadline)
+    )
     if collection is None:
         raise ProfileNotIngested(profile.name)
     meta = collection.metadata or {}
@@ -234,7 +252,9 @@ async def run(
     model = str(meta.get("embedding_model") or profile.embedding_model)
 
     started = time.monotonic()
-    [vector] = await clients.embed([profile.query_prefix + question], model)
+    [vector] = await clients.embed(
+        [profile.query_prefix + question], model, timeout=_budget(deadline)
+    )
     embedding_ms = _ms(started)
 
     started = time.monotonic()
@@ -243,7 +263,9 @@ async def run(
         if len(sync_ids) == 1
         else {"sync_id": {"$in": sync_ids}}
     )
-    hits = await clients.query_chunks(collection, vector, settings.RAG_TOP_K, where)
+    hits = await clients.query_chunks(
+        collection, vector, settings.RAG_TOP_K, where, timeout=_budget(deadline)
+    )
     # A past answer that was un-accepted or retracted since the last
     # re-index must not be cited (§4.6).
     qa_posts = [
@@ -298,8 +320,13 @@ async def run(
         log.warning("rag_prompt_chunks_dropped", dropped=len(kept) - len(built.used))
         kept = [kept[i] for i in built.used]
 
-    started = time.monotonic()
+    queued = time.monotonic()
+    generation_ms = 0.0
     async with generation_gate.acquire(caller, deadline) as held:
+        # generation_time_ms is the generation itself; time spent waiting
+        # for the gate (behind another answer) is logged separately.
+        gate_wait_ms = _ms(queued)
+        started = time.monotonic()
         if held:
             result = await clients.chat(
                 config.generation_model,
@@ -312,9 +339,11 @@ async def run(
                 },
                 deadline=deadline,
             )
+            generation_ms = _ms(started)
         else:
             result = clients.ChatResult("", truncated=True)
-    generation_ms = _ms(started)
+    if gate_wait_ms >= 1000:
+        log.info("rag_generation_gate_wait", wait_ms=gate_wait_ms)
     if result.truncated:
         log.warning("rag_generation_truncated", chars=len(result.text))
     return RagResult(
