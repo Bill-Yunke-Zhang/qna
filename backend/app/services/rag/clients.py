@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,18 +51,26 @@ def _client(base_url: str, timeout: float) -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=_transport)
 
 
+def _timeout(timeout: float | None) -> float:
+    """A request's timeout: the caller's (at least 0.1 s), else the default."""
+    return settings.RAG_SERVICE_TIMEOUT_S if timeout is None else max(timeout, 0.1)
+
+
 # ── Infinity (embeddings) ────────────────────────────────────────────────────
 
 
-async def embed(texts: list[str], model: str) -> list[list[float]]:
+async def embed(
+    texts: list[str], model: str, *, timeout: float | None = None
+) -> list[list[float]]:
     """
     Embed `texts` with `model`, in batches of `INFINITY_BATCH_SIZE` so a large
     ingestion can't grow Infinity's memory without limit. Returns one vector
-    per text, in order.
+    per text, in order. `timeout` (default RAG_SERVICE_TIMEOUT_S) applies to
+    each request; the pipeline passes what's left of its budget.
     """
     vectors: list[list[float]] = []
     batch_size = settings.INFINITY_BATCH_SIZE
-    async with _client(settings.INFINITY_URL, settings.RAG_SERVICE_TIMEOUT_S) as c:
+    async with _client(settings.INFINITY_URL, _timeout(timeout)) as c:
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]
             try:
@@ -96,13 +106,13 @@ def normalize_model_tag(tag: str) -> str:
     return tag if ":" in tag else f"{tag}:latest"
 
 
-async def list_models() -> frozenset[str]:
+async def list_models(*, timeout: float | None = None) -> frozenset[str]:
     """Pulled Ollama models (normalized tags), cached for ~30 s."""
     global _models_cache
     now = time.monotonic()
     if _models_cache and now - _models_cache[0] < _MODELS_CACHE_S:
         return _models_cache[1]
-    async with _client(settings.OLLAMA_URL, settings.RAG_SERVICE_TIMEOUT_S) as c:
+    async with _client(settings.OLLAMA_URL, _timeout(timeout)) as c:
         try:
             resp = await c.get("/api/tags")
             resp.raise_for_status()
@@ -120,15 +130,16 @@ async def list_models() -> frozenset[str]:
     return models
 
 
-async def has_model(tag: str) -> bool:
-    return normalize_model_tag(tag) in await list_models()
+async def has_model(tag: str, *, timeout: float | None = None) -> bool:
+    return normalize_model_tag(tag) in await list_models(timeout=timeout)
 
 
 @dataclass(frozen=True)
 class ChatResult:
     text: str
-    # True when the deadline cut generation short. The live path never posts
-    # a truncated answer; compare returns it as is (§5.3).
+    # True when the answer is cut off: the deadline passed, or it hit
+    # `num_predict` (Ollama's done_reason "length"). The live path never
+    # posts a truncated answer; compare returns it as is (§5.3).
     truncated: bool
 
 
@@ -144,7 +155,8 @@ async def chat(
     `time.monotonic()` value) passes. The deadline is a total budget: it also
     covers waiting for Ollama to load the model and start answering. On
     timeout, returns the text received so far (possibly empty) with
-    `truncated=True` instead of raising.
+    `truncated=True` instead of raising. An answer that stopped at the
+    `num_predict` cap is `truncated` too, since it ends mid-sentence.
     """
     parts: list[str] = []
     remaining = deadline - time.monotonic()
@@ -175,7 +187,14 @@ async def chat(
                             raise ServiceUnavailable("ollama", str(chunk["error"]))
                         parts.append(chunk.get("message", {}).get("content", ""))
                         if chunk.get("done"):
-                            return ChatResult("".join(parts), truncated=False)
+                            capped = chunk.get("done_reason") == "length"
+                            if capped:
+                                logger.warning(
+                                    "ollama_generation_hit_num_predict",
+                                    model=model,
+                                    chars=sum(map(len, parts)),
+                                )
+                            return ChatResult("".join(parts), truncated=capped)
         except TimeoutError:
             logger.warning(
                 "ollama_generation_truncated", model=model, chars=sum(map(len, parts))
@@ -212,11 +231,31 @@ async def chroma() -> Any:
     return _chroma_client
 
 
-async def get_collection(name: str) -> Any | None:
+@asynccontextmanager
+async def _chroma_timeout(timeout: float | None) -> AsyncIterator[None]:
+    """
+    The ChromaDB client has no request timeout of its own, so a hung server
+    would hold a compare call past the harness's limit. Every call goes
+    through this.
+    """
+    seconds = _timeout(timeout)
+    try:
+        async with asyncio.timeout(seconds):
+            yield
+    except TimeoutError:
+        raise ServiceUnavailable(
+            "chromadb", f"no answer within {seconds:.0f} s"
+        ) from None
+
+
+async def get_collection(name: str, *, timeout: float | None = None) -> Any | None:
     """The collection named `name`, or None if it doesn't exist."""
     client = await chroma()
     try:
-        return await client.get_collection(name)
+        async with _chroma_timeout(timeout):
+            return await client.get_collection(name)
+    except ServiceUnavailable:
+        raise
     except Exception as exc:
         if _is_not_found(exc):
             return None
@@ -234,14 +273,17 @@ async def get_or_create_collection(name: str, metadata: dict[str, Any]) -> Any:
         return existing
     client = await chroma()
     try:
-        return await client.create_collection(
-            name,
-            metadata=metadata,
-            configuration={"hnsw": {"space": "cosine"}},
-            # Vectors always come from Infinity; never let Chroma embed.
-            embedding_function=None,
-            get_or_create=True,  # another sync may have just created it
-        )
+        async with _chroma_timeout(None):
+            return await client.create_collection(
+                name,
+                metadata=metadata,
+                configuration={"hnsw": {"space": "cosine"}},
+                # Vectors always come from Infinity; never let Chroma embed.
+                embedding_function=None,
+                get_or_create=True,  # another sync may have just created it
+            )
+    except ServiceUnavailable:
+        raise
     except Exception as exc:
         raise ServiceUnavailable("chromadb", _describe(exc)) from exc
 
@@ -254,9 +296,12 @@ async def add_chunks(
     metadatas: list[dict[str, Any]],
 ) -> None:
     try:
-        await collection.add(
-            ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas
-        )
+        async with _chroma_timeout(None):
+            await collection.add(
+                ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas
+            )
+    except ServiceUnavailable:
+        raise
     except Exception as exc:
         raise ServiceUnavailable("chromadb", _describe(exc)) from exc
 
@@ -266,7 +311,10 @@ async def get_chunk_metadata(
 ) -> list[dict[str, Any]]:
     """The metadata of every chunk matching `where` (no vectors or text)."""
     try:
-        result = await collection.get(where=where, include=["metadatas"])
+        async with _chroma_timeout(None):
+            result = await collection.get(where=where, include=["metadatas"])
+    except ServiceUnavailable:
+        raise
     except Exception as exc:
         raise ServiceUnavailable("chromadb", _describe(exc)) from exc
     return list(result.get("metadatas") or [])
@@ -283,16 +331,24 @@ class Hit:
 
 
 async def query_chunks(
-    collection: Any, embedding: list[float], n: int, where: dict[str, Any]
+    collection: Any,
+    embedding: list[float],
+    n: int,
+    where: dict[str, Any],
+    *,
+    timeout: float | None = None,
 ) -> list[Hit]:
     """The `n` nearest chunks matching `where`, nearest first."""
     try:
-        result = await collection.query(
-            query_embeddings=[embedding],
-            n_results=n,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
+        async with _chroma_timeout(timeout):
+            result = await collection.query(
+                query_embeddings=[embedding],
+                n_results=n,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
+    except ServiceUnavailable:
+        raise
     except Exception as exc:
         raise ServiceUnavailable("chromadb", _describe(exc)) from exc
     documents = (result.get("documents") or [[]])[0]
@@ -306,7 +362,10 @@ async def query_chunks(
 
 async def delete_chunks(collection: Any, where: dict[str, Any]) -> None:
     try:
-        await collection.delete(where=where)
+        async with _chroma_timeout(None):
+            await collection.delete(where=where)
+    except ServiceUnavailable:
+        raise
     except Exception as exc:
         raise ServiceUnavailable("chromadb", _describe(exc)) from exc
 
@@ -340,7 +399,8 @@ async def health() -> dict[str, dict[str, Any]]:
 
     async def check_chroma() -> dict[str, Any]:
         client = await chroma()
-        await client.heartbeat()
+        async with _chroma_timeout(5):
+            await client.heartbeat()
         return {"ok": True}
 
     checks = {

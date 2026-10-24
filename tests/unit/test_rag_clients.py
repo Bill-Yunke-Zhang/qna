@@ -232,3 +232,94 @@ async def test_chat_malformed_stream_line_is_service_unavailable(monkeypatch, cl
         await clients.chat("m", [], options={}, deadline=time.monotonic() + 5)
 
     assert "malformed stream line" in err.value.detail
+
+
+@pytest.mark.parametrize(
+    ("reason", "truncated"), [("length", True), ("stop", False), (None, False)]
+)
+async def test_chat_answer_cut_at_num_predict_is_truncated(
+    monkeypatch, clients, reason, truncated
+):
+    # Ollama ends a capped answer normally, with done_reason "length": it stops
+    # mid-sentence, so the live path must not post it.
+    done = {"message": {"content": ""}, "done": True}
+    if reason:
+        done["done_reason"] = reason
+    body = _ndjson({"message": {"content": "Slip days are"}, "done": False}, done)
+    _use(monkeypatch, clients, lambda r: httpx.Response(200, content=body))
+
+    result = await clients.chat(
+        "m",
+        [{"role": "user", "content": "?"}],
+        options={},
+        deadline=time.monotonic() + 10,
+    )
+    assert result == clients.ChatResult("Slip days are", truncated=truncated)
+
+
+# ── ChromaDB timeouts ────────────────────────────────────────────────────────
+
+
+class HungCollection:
+    """A ChromaDB collection whose calls never answer."""
+
+    async def _hang(self, **kwargs):
+        await asyncio.sleep(3600)
+
+    query = add = get = delete = _hang
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c, col: c.query_chunks(col, [0.1], 5, {}, timeout=0.05),
+        lambda c, col: c.get_chunk_metadata(col, {}),
+        lambda c, col: c.delete_chunks(col, {}),
+        lambda c, col: c.add_chunks(col, ["a"], [[0.1]], ["t"], [{}]),
+    ],
+    ids=["query", "get", "delete", "add"],
+)
+async def test_a_hung_chromadb_is_service_unavailable_not_a_hang(
+    monkeypatch, clients, call
+):
+    monkeypatch.setattr(clients.settings, "RAG_SERVICE_TIMEOUT_S", 0.05)
+    started = time.monotonic()
+    with pytest.raises(clients.ServiceUnavailable) as err:
+        await call(clients, HungCollection())
+    assert err.value.service == "chromadb"
+    assert time.monotonic() - started < 1
+
+
+async def test_get_collection_times_out(monkeypatch, clients):
+    class HungClient:
+        async def get_collection(self, name):
+            await asyncio.sleep(3600)
+
+    async def chroma():
+        return HungClient()
+
+    monkeypatch.setattr(clients, "chroma", chroma)
+    with pytest.raises(clients.ServiceUnavailable):
+        await clients.get_collection("c", timeout=0.05)
+
+
+async def test_embed_uses_the_callers_timeout(monkeypatch, clients):
+    # MockTransport doesn't enforce timeouts, so check what the client is given.
+    made = []
+    real = clients._client
+
+    def client(base_url, timeout):
+        made.append(timeout)
+        return real(base_url, timeout)
+
+    monkeypatch.setattr(clients, "_client", client)
+    _use(
+        monkeypatch,
+        clients,
+        lambda r: httpx.Response(
+            200, json={"data": [{"index": 0, "embedding": [1.0]}]}
+        ),
+    )
+    await clients.embed(["q"], "m", timeout=7.5)
+    await clients.embed(["q"], "m")
+    assert made == [7.5, clients.settings.RAG_SERVICE_TIMEOUT_S]

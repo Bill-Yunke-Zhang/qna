@@ -203,22 +203,25 @@ def services(monkeypatch):
         "accepted": set(),
         "chat": clients.ChatResult("Three slip days.", truncated=False),
         "calls": [],
+        "timeouts": [],
     }
 
-    async def has_model(tag):
+    async def has_model(tag, timeout=None):
         return clients.normalize_model_tag(tag) in {
             clients.normalize_model_tag(m) for m in state["models"]
         }
 
-    async def get_collection(name):
+    async def get_collection(name, timeout=None):
         state["calls"].append(("collection", name))
         return state["collection"]
 
-    async def embed(texts, model):
+    async def embed(texts, model, timeout=None):
         state["calls"].append(("embed", texts, model))
+        state["timeouts"].append(timeout)
         return [[0.1, 0.2]]
 
-    async def query_chunks(collection, embedding, n, where):
+    async def query_chunks(collection, embedding, n, where, timeout=None):
+        state["timeouts"].append(timeout)
         state["calls"].append(("query", n, where))
         return state["hits"]
 
@@ -385,3 +388,42 @@ async def test_truncated_generation_is_reported(services):
     services["chat"] = clients.ChatResult("Three sl", truncated=True)
     result = await run()
     assert result.matched and result.truncated and result.answer == "Three sl"
+
+
+async def test_service_calls_get_only_what_is_left_of_the_budget(services):
+    services["hits"] = [hit(0.1)]
+    await pipeline.run(
+        7, "q", config(), caller="COMPARE", deadline=time.monotonic() + 5
+    )
+    # embed and query, each bounded by the ~5 s left, not the 60 s default.
+    assert len(services["timeouts"]) == 2
+    assert all(t is not None and 0 < t <= 5 for t in services["timeouts"])
+
+
+async def test_a_used_up_budget_stops_before_calling_services(services):
+    with pytest.raises(clients.ServiceUnavailable):
+        await pipeline.run(
+            7, "q", config(), caller="COMPARE", deadline=time.monotonic() - 1
+        )
+    assert not any(c[0] in ("embed", "query", "chat") for c in services["calls"])
+
+
+async def test_generation_time_excludes_waiting_for_the_gate(services, monkeypatch):
+    services["hits"] = [hit(0.1)]
+    gate = pipeline.generation_gate
+    release = asyncio.Event()
+
+    async def hold():
+        async with gate.acquire("LIVE", time.monotonic() + 10):
+            await release.wait()
+
+    holder = asyncio.create_task(hold())
+    await asyncio.sleep(0)
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.3, release.set)
+
+    started = time.monotonic()
+    result = await run()
+    await holder
+    assert time.monotonic() - started >= 0.3  # it did wait behind the holder
+    assert result.metrics.generation_time_ms < 200  # but that isn't generation
