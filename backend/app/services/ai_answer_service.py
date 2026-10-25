@@ -282,6 +282,17 @@ _NOT_IN_CONTEXT = re.compile(
     r" in the (?:provided |given |available )?(?:context|information|materials?)\b",
     re.IGNORECASE,
 )
+# "The syllabus does not provide information about the midterm." qwen2.5 names
+# the source instead of "the context" (live board, 10/24). Same guard as
+# above: nothing ending in , . ; : before it, and nothing after it but the
+# rest of that one sentence, so "…, but the rubric says X" still posts.
+_SOURCE_LACKS_INFO = re.compile(
+    r"^\W*[^.,;:!?\n]{1,80}?\b(?:does not|doesn't|do not|don't)"
+    r" (?:provide|contain|include|give|have|offer|mention|specify)"
+    r" (?:any |specific |enough |detailed |further )?(?:information|details)\b"
+    r"(?:(?!\b(?:but|however|although|though)\b)[^.;:!?\n])*[.!?]?\s*$",
+    re.IGNORECASE,
+)
 _REFUSAL_MAX_WORDS = 40
 
 
@@ -291,6 +302,7 @@ def is_refusal(answer: str) -> bool:
     return len(text.split()) < _REFUSAL_MAX_WORDS and (
         _REFUSAL_START.match(text) is not None
         or _NOT_IN_CONTEXT.match(text) is not None
+        or _SOURCE_LACKS_INFO.match(text) is not None
     )
 
 
