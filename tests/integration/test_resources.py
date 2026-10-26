@@ -6,9 +6,8 @@ under each profile.
 
 Access-control and validation tests need only the backend. The ingestion
 tests also need Infinity and ChromaDB, and the retrieval checks Ollama with
-the baseline model; they are skipped, with the reason, when those aren't
-reachable (override the probe URLs with TEST_INFINITY_URL, TEST_CHROMA_URL
-and TEST_OLLAMA_URL). A sync runs in the background and stays "syncing" for
+the baseline model; they are skipped, with the reason, when the backend's
+/rag/health reports those down. A sync runs in the background and stays "syncing" for
 CLEANUP_GRACE_S (30 s) after its new chunks go live, so those tests take a
 while.
 """
@@ -16,7 +15,6 @@ while.
 from __future__ import annotations
 
 import io
-import os
 import pathlib
 import time
 import uuid
@@ -101,34 +99,45 @@ def _syncs(source: dict) -> dict:
     return {s["profile"]: s for s in source["syncs"]}
 
 
-def _reachable(url: str) -> bool:
-    try:
-        return httpx.get(url, timeout=3.0).status_code < 500
-    except httpx.HTTPError:
-        return False
+@pytest.fixture(scope="module")
+def rag_report(base_url, admin_token) -> dict:
+    # Ask the backend, not the services' host ports: it reaches them on the
+    # Compose network, which is what ingestion uses, while the ports may not
+    # be published where the tests run (the pre-run skipped 8 tests that way).
+    r = httpx.post(
+        f"{base_url}/api/admin/courses",
+        json={"name": f"RAG Probe {uuid.uuid4().hex[:8]}", "semester": "Test"},
+        headers=admin_headers(admin_token),
+    )
+    assert r.status_code == 201, r.text
+    r = httpx.get(
+        f"{base_url}/api/courses/{r.json()['id']}/rag/health",
+        params={"generation_models": BASELINE_MODEL},
+        headers=admin_headers(admin_token),
+        timeout=60.0,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
 
 
 @pytest.fixture(scope="module")
-def rag_services():
-    infinity = os.environ.get("TEST_INFINITY_URL", "http://127.0.0.1:7997/health")
-    chroma = os.environ.get("TEST_CHROMA_URL", "http://127.0.0.1:8001/api/v2/heartbeat")
+def rag_services(rag_report):
+    services = rag_report["services"]
     missing = [
         name
-        for name, url in (("Infinity", infinity), ("ChromaDB", chroma))
-        if not _reachable(url)
+        for name, key in (("Infinity", "infinity"), ("ChromaDB", "chromadb"))
+        if not services[key].get("ok")
     ]
     if missing:
         pytest.skip(f"{' and '.join(missing)} not reachable; ingestion needs them")
 
 
 @pytest.fixture(scope="module")
-def baseline_model(rag_services):
-    url = os.environ.get("TEST_OLLAMA_URL", "http://127.0.0.1:11434")
-    try:
-        tags = httpx.get(f"{url}/api/tags", timeout=3.0).json().get("models", [])
-    except (httpx.HTTPError, ValueError):
+def baseline_model(rag_services, rag_report):
+    if not rag_report["services"]["ollama"].get("ok"):
         pytest.skip("Ollama not reachable; retrieval checks need it")
-    if not any(m.get("name", "").startswith(BASELINE_MODEL) for m in tags):
+    pulled = {m["model"]: m["pulled"] for m in rag_report["generation_models"]}
+    if not pulled.get(BASELINE_MODEL):
         pytest.skip(f"{BASELINE_MODEL} isn't pulled into Ollama")
 
 
