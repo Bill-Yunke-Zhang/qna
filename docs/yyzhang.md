@@ -262,8 +262,12 @@ name because she ran the harness.
 ## 4. AI Tools Used
 
 **Claude Code, my main working session** (the desktop app's Code tab, in
-`~/qna-69`). It's logged automatically as
-[`ai_log/*_dd7b27ca.md`](../ai_log/), about 160 entries from 10/12 to 10/24.
+`~/qna-69`), session `dd7b27ca`. It's logged automatically, one file per
+recorded segment, 165 files on `main` from 10/12 to 10/24. The first is
+[`ai_log/2026-10-12_15-22-24_dd7b27ca.md`](../ai_log/2026-10-12_15-22-24_dd7b27ca.md).
+The one covering the deployment checks (memory peak, truncation count, the
+refusal fix) is
+[`ai_log/2026-10-24_15-34-09_dd7b27ca.md`](../ai_log/2026-10-24_15-34-09_dd7b27ca.md).
 What I used it for:
 
 - **Reviewing every one of Yuthika's MRs.** It merged the branch with `main`
